@@ -21,7 +21,9 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 - Google-kalenteri suoraan (`google_*`, tapahtumien värit): device flow, refresh token `/data/google.json`,
   asetukset `google_client_id`, `google_client_secret`; värisäännöt `asetukset/kalenteri.md`.
 - Tiedostot: `/share/agent` (reseptit/, asetukset/, ruokalistat/, saapuneet/, ostokset/).
-- Keskusteluhistoria: `/data/historia/` (säilyy uudelleenkäynnistyksissä ja päivityksissä).
+- Keskusteluhistoria: `/data/historia/` (säilyy uudelleenkäynnistyksissä ja päivityksissä). Lyhennys koon mukaan
+  (`MAX_HISTORY_CHARS`): ensin vanhojen vuorojen työvaiheet tiivistetään, vasta sitten vanhimmat vuorot pois.
+  Prompt caching (`cache_control` ylätasolla) pitää pitkän historian kulut kurissa.
 
 ## Säännöt
 

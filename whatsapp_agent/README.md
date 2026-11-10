@@ -136,7 +136,8 @@ tunnistettavaksi; ääniviestiä ei tallenneta, kun tunnistus onnistuu.
 
 Keskusteluhistoria tallentuu lisäosan `/data/historia/`-kansioon, joten agentti muistaa keskustelun myös
 päivityksen ja uudelleenkäynnistyksen jälkeen. Jokaisella yksityiskeskustelulla ja ryhmällä on oma historiansa.
-Pitkät keskustelut lyhennetään automaattisesti 40 viestin jälkeen.
+Pitkissä keskusteluissa vanhojen tehtävien työvaiheet tiivistetään, mutta itse keskustelu säilyy pitkään.
+Agentti näyttää WhatsAppissa *kirjoittaa…* työn ajan ja kertoo monivaiheisen työn alussa, mitä tekee.
 
 ## Turvallisuus
 

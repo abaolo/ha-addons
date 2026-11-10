@@ -23,6 +23,7 @@ from PIL import Image, ImageOps
 import segno
 from anthropic import AsyncAnthropic, BadRequestError
 from neonize.aioze.client import NewAClient
+from neonize.utils.enum import ChatPresence, ChatPresenceMedia
 from neonize.aioze.events import ConnectedEv, LoggedOutEv, MessageEv, PairStatusEv
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -57,8 +58,10 @@ RECIPES_DIR = "reseptit"
 # Home Assistant -palvelut, joita agentti saa kutsua. Laajenna harkiten.
 ALLOWED_SERVICE_DOMAINS = {"light", "switch", "scene", "script", "input_boolean", "climate", "calendar", "todo"}
 TZ = ZoneInfo("Europe/Helsinki")
-MAX_HISTORY = 40  # kun historia ylittää tämän, se lyhennetään kerralla HISTORY_KEEP-viestiin
-HISTORY_KEEP = 16
+# Historia lyhennetään koon mukaan (merkkeinä), ei viestimäärän: yksi iso tehtävä voi olla kymmeniä työvaiheita.
+MAX_HISTORY_CHARS = 400_000  # noin 100 000 tokenia; ylittyessä tiivistetään vanhat työvaiheet
+HISTORY_TARGET_CHARS = 250_000
+RECENT_TURNS = 6  # näin monen viimeisimmän käyttäjän viestin työvaiheet säilyvät tiivistämättä
 MAX_TOOL_ROUNDS = 25
 MAX_OUTPUT_TOKENS = 16_000  # isot tehtävät (esim. kymmeniä tiedostoja kerralla) tarvitsevat tilaa
 
@@ -89,6 +92,9 @@ def system_prompt() -> str:
     return (
         "Olet käyttäjän henkilökohtainen avustaja WhatsAppissa. Vastaa suomeksi ja lyhyesti, "
         "koska viestit luetaan puhelimella.\n"
+        "Kun tehtävä vaatii useita työvaiheita, kirjoita ensimmäisen työkalukutsun yhteyteen yksi lyhyt lause "
+        "siitä, mitä olet tekemässä (esim. 'Haen ostoslistat ja kulutustiedot…'); se lähetetään käyttäjälle "
+        "heti. Älä toista sitä lopullisessa vastauksessa.\n"
         "Jokaisen käyttäjän viestin alussa on hakasulkeissa lähetyshetki Suomen aikaa.\n"
         "Työkalusi: tiedostot (esim. reseptit) kansiossa /share/agent, Home Assistantin anturit "
         "ja laitteet, kalenterit sekä verkkohaku (web_search, web_fetch) esim. tuotteille, hinnoille, "
@@ -1426,16 +1432,47 @@ def strip_thinking(msgs: list) -> None:
         m["content"] = kept or "(ei tekstiä)"
 
 
+def history_size(msgs: list) -> int:
+    return len(json.dumps(msgs, ensure_ascii=False, default=str))
+
+
+def compact_block(b):
+    """Tiivistää vanhan työvaiheen: työkalun tulos ja isot syötteet lyhennetään, keskustelun teksti säilyy."""
+    if not isinstance(b, dict):
+        return b
+    if b.get("type") == "tool_result":
+        content = b.get("content")
+        text = content if isinstance(content, str) else " ".join(
+            c.get("text", "[kuva]") if isinstance(c, dict) else str(c) for c in (content or []))
+        return {**b, "content": (text[:300] + " …(lyhennetty)") if len(text) > 300 else text}
+    if b.get("type") == "tool_use":
+        return {**b, "input": {k: (v[:200] + " …(lyhennetty)" if isinstance(v, str) and len(v) > 200 else v)
+                               for k, v in (b.get("input") or {}).items()}}
+    if b.get("type") in ("web_search_tool_result", "web_fetch_tool_result"):
+        return None  # haun raakatulokset eivät ole tarpeen myöhemmin
+    return b
+
+
 def trim_history(msgs: list) -> None:
-    # Lyhennetään harvoin ja kerralla, koska jokainen lyhennys hävittää ajattelulohkot.
-    # Historia alkaa aina käyttäjän tekstiviestistä, jottei tool_use/tool_result-pari katkea.
-    if len(msgs) <= MAX_HISTORY:
+    # Lyhennetään harvoin ja kerralla, koska muutos hävittää ajattelulohkot ja välimuistin.
+    if history_size(msgs) <= MAX_HISTORY_CHARS:
         return
-    while len(msgs) > HISTORY_KEEP:
-        msgs.pop(0)
-        while msgs and not (msgs[0]["role"] == "user" and isinstance(msgs[0]["content"], str)):
-            msgs.pop(0)
+    starts = [i for i, m in enumerate(msgs) if m["role"] == "user" and isinstance(m["content"], str)]
+    cut = starts[-RECENT_TURNS] if len(starts) > RECENT_TURNS else 0
+    for m in msgs[:cut]:  # 1) tiivistetään vanhojen vuorojen työvaiheet
+        if isinstance(m["content"], list):
+            blocks = [x for x in (compact_block(b) for b in m["content"]) if x is not None]
+            if any(isinstance(b, dict) and b.get("type") in ("server_tool_use",) for b in blocks):
+                blocks = [b for b in blocks if not (isinstance(b, dict) and b.get("type") == "server_tool_use")]
+            m["content"] = blocks or "(ei tekstiä)"
     strip_thinking(msgs)
+    while history_size(msgs) > HISTORY_TARGET_CHARS and len(starts) > 2:  # 2) vanhimmat vuorot pois
+        nxt = next((i for i in starts if i > 0), None)
+        if nxt is None:
+            break
+        del msgs[:nxt]
+        starts = [i for i, m in enumerate(msgs) if m["role"] == "user" and isinstance(m["content"], str)]
+    log.info("Keskusteluhistoria tiivistettiin (%d viestiä, %d merkkiä)", len(msgs), history_size(msgs))
 
 
 def repair_history(msgs: list) -> None:
@@ -1464,8 +1501,10 @@ def repair_history(msgs: list) -> None:
 async def ask_claude(msgs: list):
     async def create():
         # Suoratoisto: pitkä vastaus tulee pätkinä, jolloin yhteys ei katkea odotukseen (APITimeoutError).
+        # cache_control: aiempi historia luetaan välimuistista (noin kymmenesosan hinnalla).
         async with claude.messages.stream(model=OPTIONS["model"], max_tokens=MAX_OUTPUT_TOKENS,
-                                          system=system_prompt(), tools=TOOLS, messages=msgs) as stream:
+                                          system=system_prompt(), tools=TOOLS, messages=msgs,
+                                          cache_control={"type": "ephemeral"}) as stream:
             return await stream.get_final_message()
     try:
         return await create()
@@ -1486,7 +1525,7 @@ async def ask_claude(msgs: list):
         raise
 
 
-async def run_agent(sender: str, text: str) -> str:
+async def run_agent(sender: str, text: str, progress=None) -> str:
     msgs = load_history(sender)
     repair_history(msgs)
     msgs.append({"role": "user", "content": f"[{timestamp()}] {text}"})
@@ -1499,6 +1538,9 @@ async def run_agent(sender: str, text: str) -> str:
         calls = [b for b in resp.content if b.type == "tool_use"]
         if not calls or resp.stop_reason not in ("tool_use", "max_tokens"):
             break
+        interim = "\n".join(b.text for b in resp.content if b.type == "text").strip()
+        if interim and progress is not None:  # kerrotaan heti, mitä ollaan tekemässä
+            await progress(interim)
         results = []
         for n, block in enumerate(calls):
             if resp.stop_reason == "max_tokens" and n == len(calls) - 1:
@@ -1542,6 +1584,36 @@ async def transcribe(audio: bytes) -> str:
     return (r.json().get("text") or "").strip()
 
 
+async def run_with_typing(chat, key: str, text: str, quiet: bool) -> str:
+    """Ajaa agentin. Näyttää 'kirjoittaa…' työn ajan ja lähettää välitiedotteet (ei hiljaisissa ryhmäviesteissä
+    ennen kuin agentti on päättänyt toimia)."""
+    state = {"typing": not quiet}
+
+    async def typing():
+        while True:
+            if state["typing"]:
+                try:
+                    await wa.send_chat_presence(chat, ChatPresence.CHAT_PRESENCE_COMPOSING,
+                                                ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT)
+                except Exception:
+                    pass
+            await asyncio.sleep(8)
+
+    async def progress(note: str):
+        state["typing"] = True
+        await send_whatsapp(chat, f"⏳ {note}")
+
+    task = asyncio.create_task(typing())
+    try:
+        return await run_agent(key, text, progress)
+    finally:
+        task.cancel()
+        try:
+            await wa.send_chat_presence(chat, ChatPresence.CHAT_PRESENCE_PAUSED, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT)
+        except Exception:
+            pass
+
+
 async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, media: str = "",
                       heard: str = "") -> None:
     """key = keskustelun tunniste: lähettäjän numero tai ryhmän tunnus.
@@ -1551,7 +1623,7 @@ async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, 
     async with locks.setdefault(key, asyncio.Lock()):
         current_chat.set(chat)
         try:
-            reply = await run_agent(key, text)
+            reply = await run_with_typing(chat, key, text, may_stay_silent)
         except Exception:
             log.exception("Agentti epäonnistui")
             reply = "Virhe käsittelyssä. Katso lisäosan loki."
