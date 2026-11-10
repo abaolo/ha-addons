@@ -79,7 +79,10 @@ def system_prompt() -> str:
         "koska viestit luetaan puhelimella.\n"
         "Jokaisen käyttäjän viestin alussa on hakasulkeissa lähetyshetki Suomen aikaa.\n"
         "Työkalusi: tiedostot (esim. reseptit) kansiossa /share/agent, Home Assistantin anturit "
-        "ja laitteet sekä kalenterit.\n"
+        "ja laitteet, kalenterit sekä verkkohaku (web_search, web_fetch) esim. tuotteille, hinnoille, "
+        "tarjouksille, aukioloajoille ja uutisille. Kerro verkosta haetun tiedon lähde lyhyesti (sivuston "
+        "nimi tai linkki) ja huomauta, jos hinta tai saatavuus voi muuttua. Et osta mitään: anna linkit, "
+        "ja käyttäjä ostaa itse.\n"
         "Säännöt: hae anturiarvot aina työkaluilla, älä arvaa. Jos pyyntö muuttaisi jotain "
         "(valot, kalenteri, tiedostot) ja se on epäselvä, kysy ensin. Etsi reseptit "
         "search_files- ja read_file-työkaluilla ja kerro, mistä tiedostosta tieto tuli. "
@@ -346,6 +349,13 @@ TOOLS = [
             "required": ["entity_id", "start", "end"],
         },
     },
+]
+
+# Anthropicin palvelimella ajettavat verkkotyökalut (haku ja sivun luku). max_uses rajaa kulut per viesti.
+TOOLS += [
+    {"type": "web_search_20260209", "name": "web_search", "max_uses": 5,
+     "user_location": {"type": "approximate", "country": "FI", "timezone": "Europe/Helsinki"}},
+    {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5},
 ]
 
 
@@ -855,6 +865,8 @@ async def run_agent(sender: str, text: str) -> str:
     for _ in range(MAX_TOOL_ROUNDS):
         resp = await ask_claude(msgs)
         msgs.append({"role": "assistant", "content": resp.content})
+        if resp.stop_reason == "pause_turn":
+            continue  # palvelimen verkkohaku jäi kesken; lähetetään uudelleen, niin se jatkuu
         if resp.stop_reason != "tool_use":
             break
         results = []
