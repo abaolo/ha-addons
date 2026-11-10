@@ -48,9 +48,21 @@ Lähetä omasta puhelimestasi WhatsApp-viesti prepaid-numeroon, esim.
 - Google-kalenteri: lisää Home Assistantiin **Google Calendar** -integraatio. Agentti löytää sen automaattisesti.
 - Ostoslista: lisää **Shopping list** -integraatio.
 
+## Ryhmät
+
+Agentti vastaa ryhmässä vain, kun viesti on osoitettu sille:
+- viesti alkaa agentin nimellä (asetus `name`, oletus *Kotiapuri*), esim. *"Kotiapuri, mitä syödään huomenna?"*
+- agentti mainitaan (`@Kotiapuri`), tai
+- vastataan agentin viestiin.
+
+Lisäksi ryhmän pitää olla asetuksen `allowed_groups` listassa ja lähettäjän `allowed_numbers`-listassa.
+Ryhmän tunnuksen saat näin: lisää agentti ryhmään, kirjoita ryhmään *"Kotiapuri hei"* ja katso lokista rivi
+*"Ryhmä 1203…@g.us ei ole allowed_groups-listassa"*. Kopioi tunnus asetuksiin ja tallenna (lisäosa käynnistyy uudelleen).
+Ryhmällä on oma keskusteluhistoriansa.
+
 ## Turvallisuus
 
-- Agentti vastaa vain `allowed_numbers`-listan numeroihin eikä ryhmäviesteihin.
+- Agentti vastaa vain `allowed_numbers`-listan numeroihin, ja ryhmissä vain `allowed_groups`-listan ryhmissä.
 - Tiedostot rajataan kansioon `/share/agent`.
 - Home Assistant -palvelut on rajattu `agent.py`:n `ALLOWED_SERVICE_DOMAINS`-listaan.
 - API-avain on vain lisäosan asetuksissa.

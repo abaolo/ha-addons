@@ -28,6 +28,9 @@ FILES_ROOT.mkdir(parents=True, exist_ok=True)
 QR_FILE = FILES_ROOT / "whatsapp_qr.png"  # avaa Samballa ja skannaa puhelimella
 INBOX_DIR = "saapuneet"  # WhatsAppin kautta lähetetyt tiedostot tallentuvat tänne
 ALLOWED_NUMBERS = set(OPTIONS["allowed_numbers"])
+# Ryhmät, joissa agentti vastaa (ryhmän tunnus, esim. 120363012345678901@g.us; @-osa vapaaehtoinen).
+ALLOWED_GROUPS = {g.strip().split("@")[0] for g in OPTIONS.get("allowed_groups", []) if g.strip()}
+BOT_NAME = (OPTIONS.get("name") or "Kotiapuri").strip()
 # Home Assistant -palvelut, joita agentti saa kutsua. Laajenna harkiten.
 ALLOWED_SERVICE_DOMAINS = {"light", "switch", "scene", "script", "input_boolean", "climate", "calendar", "todo"}
 TZ = ZoneInfo("Europe/Helsinki")
@@ -38,6 +41,7 @@ claude = AsyncAnthropic(api_key=OPTIONS["anthropic_api_key"])
 http = httpx.AsyncClient(timeout=30)
 history: dict[str, list] = {}
 locks: dict[str, asyncio.Lock] = {}
+my_ids: set[str] = set()  # agentin oma numero ja LID, täytetään yhdistettäessä
 wa = NewAClient("/data/whatsapp.sqlite3")
 
 
@@ -52,6 +56,7 @@ def system_prompt() -> str:
         "Säännöt: hae anturiarvot aina työkaluilla, älä arvaa. Jos pyyntö muuttaisi jotain "
         "(valot, kalenteri, tiedostot) ja se on epäselvä, kysy ensin. Etsi reseptit "
         "search_files- ja read_file-työkaluilla ja kerro, mistä tiedostosta tieto tuli. "
+        "Ryhmäviesteissä viestin alussa on lähettäjän nimi, ja kaikki ryhmän jäsenet näkevät vastauksesi.\n"
         "Käyttäjän WhatsAppissa lähettämät tiedostot tallentuvat kansioon saapuneet; "
         "siirrä ne pyydettäessä oikeaan kansioon move_file-työkalulla.\n"
         "Ruokapäiväkirja: kun käyttäjä kertoo, mitä on syöty (tai vahvistaa listan ruoan "
@@ -294,10 +299,11 @@ async def send_whatsapp(chat, text: str) -> None:
         await wa.send_message(chat, text[i:i + 4000])
 
 
-async def handle_text(chat, sender: str, text: str) -> None:
-    async with locks.setdefault(sender, asyncio.Lock()):
+async def handle_text(chat, key: str, text: str) -> None:
+    """key = keskustelun tunniste: lähettäjän numero tai ryhmän tunnus."""
+    async with locks.setdefault(key, asyncio.Lock()):
         try:
-            reply = await run_agent(sender, text)
+            reply = await run_agent(key, text)
         except Exception:
             log.exception("Agentti epäonnistui")
             reply = "Virhe käsittelyssä. Katso lisäosan loki."
@@ -320,6 +326,27 @@ MEDIA_FIELDS = {
 }
 
 
+def context_info(msg):
+    if msg.HasField("extendedTextMessage"):
+        return msg.extendedTextMessage.contextInfo
+    for field in MEDIA_FIELDS:
+        if msg.HasField(field):
+            return getattr(msg, field).contextInfo
+    return None
+
+
+def addressed_to_me(msg, text: str) -> bool:
+    """Ryhmässä agentti vastaa vain, kun sitä mainitaan, viesti alkaa sen nimellä tai vastataan sen viestiin."""
+    if text.strip().lower().startswith(BOT_NAME.lower()):
+        return True
+    ctx = context_info(msg)
+    if ctx is None:
+        return False
+    if {jid.split("@")[0] for jid in ctx.mentionedJID} & my_ids:
+        return True
+    return bool(ctx.participant) and ctx.participant.split("@")[0] in my_ids
+
+
 async def save_media(msg, field: str) -> str:
     kind, ext = MEDIA_FIELDS[field]
     media = getattr(msg, field)
@@ -337,17 +364,35 @@ async def save_media(msg, field: str) -> str:
 @wa.event(MessageEv)
 async def on_message(client: NewAClient, ev: MessageEv) -> None:
     source = ev.Info.MessageSource
-    if source.IsFromMe or source.IsGroup:
+    if source.IsFromMe:
         return
+    msg = ev.Message
+    text = msg.conversation or msg.extendedTextMessage.text
+
+    prefix = ""
+    if source.IsGroup:
+        caption = next((getattr(msg, f).caption for f in MEDIA_FIELDS if msg.HasField(f) and f != "audioMessage"), "")
+        if not addressed_to_me(msg, text or caption):
+            return  # ryhmän muut keskustelut eivät kuulu agentille
+        group = source.Chat.User
+        if group not in ALLOWED_GROUPS:
+            log.warning("Ryhmä %s@g.us ei ole allowed_groups-listassa. Lisää se lisäosan asetuksiin, "
+                        "jos agentin pitää vastata siellä.", group)
+            return
+
     sender = sender_number(source)
     if sender not in ALLOWED_NUMBERS:
         log.warning("Hylätty viesti lähettäjältä %s", sender or source.Sender.User)
         return
 
-    msg = ev.Message
-    text = msg.conversation or msg.extendedTextMessage.text
+    if source.IsGroup:
+        key = f"ryhma:{source.Chat.User}"
+        prefix = f"[Ryhmäviesti, lähettäjä {ev.Info.Pushname or sender}] "
+    else:
+        key = sender
+
     if text:
-        asyncio.create_task(handle_text(source.Chat, sender, text))
+        asyncio.create_task(handle_text(source.Chat, key, prefix + text))
         return
 
     for field in MEDIA_FIELDS:
@@ -361,7 +406,7 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
             caption = (getattr(getattr(msg, field), "caption", "") or "").strip()
             if caption:  # kuvateksti toimii ohjeena, esim. "siirrä reseptit-kansioon"
                 asyncio.create_task(
-                    handle_text(source.Chat, sender, f"[Lähetin tiedoston, joka tallennettiin polkuun {path}] {caption}")
+                    handle_text(source.Chat, key, prefix + f"[Lähetin tiedoston, joka tallennettiin polkuun {path}] {caption}")
                 )
             else:
                 await send_whatsapp(source.Chat, f"Tallennettu: {path}")
@@ -387,6 +432,11 @@ async def on_paired(client: NewAClient, ev: PairStatusEv) -> None:
 
 @wa.event(ConnectedEv)
 async def on_connected(client: NewAClient, ev: ConnectedEv) -> None:
+    try:
+        me = await client.get_me()
+        my_ids.update(u for u in (me.JID.User, me.LID.User) if u)
+    except Exception:
+        log.exception("Oman tunnuksen haku epäonnistui; ryhmämaininnat eivät toimi, nimellä aloitus toimii")
     log.info("Yhdistetty WhatsAppiin – agentti on valmis.")
 
 
