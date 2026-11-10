@@ -42,6 +42,6 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 2. PDF- ja kuvatiedostojen lukeminen (document/image block), esim. resepti kuvasta → `reseptit/*.md`.
 3. Keskusteluhistorian tallennus `/data`-kansioon.
 4. Ajastetut viestit (iltaisin "mitä söitte tänään?", ruokalistaehdotus kahden viikon välein).
-5. S-kaupat-työkalu (Playwright + Chromium, kirjautuminen `/data`, `hae_tuote`, `lisää_koriin`, `näytä_kori`),
-   ei tilausta tai maksua. Tarkista käyttöehdot.
+5. S-kaupat: selaintyökalut `skaupat_*` tehty (0.3.0), testaus oikealla sivulla kesken. Tilaus, maksu ja
+   toimitusaika estetty koodissa (`SK_BLOCKED`), salasana peitetään (`sk_redact`).
 6. Hälytysten välitys WhatsAppiin (vuotovahti ym.).

@@ -77,6 +77,25 @@ päättää itse, kuuluuko viesti sille. Pyyntöihin (valot, kalenteri, ruoat) s
 keskusteluun ei. Kuvat ilman kuvatekstiä ohitetaan, ja kuvat, joihin agentti ei reagoi, poistetaan.
 Jokainen ryhmäviesti on Claude API -kutsu, joten vilkkaassa ryhmässä kulut kasvavat.
 
+## S-kaupat (ostoskori)
+
+Agentti kokoaa S-kauppojen ostoskorin. Tilaaminen, toimitusajan valinta ja maksaminen on estetty
+koodissa: tarkistat korin ja tilaat itse S-kaupat-sovelluksessa.
+
+**Asetukset:** `skaupat_email`, `skaupat_password` ja `skaupat_kauppa` (esim. kaupan nimi, jota käytätte).
+Kun S-kaupat lähettää kirjautumiskoodin sähköpostiin, agentti kysyy sen WhatsAppissa. Kirjautuminen
+säilyy lisäosan `/data`-kansiossa.
+
+**Käyttö:**
+- *"Opettele aiemmista tilauksista, mitä juoksevia meillä menee"*: agentti käy läpi aiemmat tilaukset
+  (`ostokset/tilaukset/`) ja laskee kulutuksen (`ostokset/kulutus.md`).
+- *"Tee S-kaupan kori ensi viikon ruokalistasta"*: agentti lisää ruokia vastaavat ostoslistat koriin,
+  ehdottaa juoksevia tuotteita ja Home Assistantin ostoslistan tuotteita ja lähettää yhteenvedon.
+
+Agentti käyttää selainta (Chromium), joten lisäosan asennus ja päivitys kestävät aiempaa kauemmin.
+Selain sulkeutuu 10 minuutin käyttämättömyyden jälkeen. Ongelmatilanteissa kuvakaappaukset tallentuvat
+kansioon `s-kaupat/`. Tarkista S-kauppojen käyttöehdot: automaattinen asiointi voi olla niissä kielletty.
+
 ## Turvallisuus
 
 - Agentti vastaa vain `allowed_numbers`-listan numeroihin, ja ryhmissä vain `allowed_groups`-listan ryhmissä.
