@@ -16,6 +16,7 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 - WhatsApp: `neonize==0.10.0` (async `neonize.aioze`), linkitetty laite. QR-koodi → `/share/agent/whatsapp_qr.png`,
   istunto `/data/whatsapp.sqlite3`. Prepaid-numero, koska tapa rikkoo WhatsAppin ehtoja.
 - LLM: Claude API, malli asetuksesta `model`.
+- Ääniviestit: `transcribe()`, Groq Whisper large-v3 (ilmainen) tai OpenAI, asetukset `stt_palvelu`, `stt_api_key`.
 - Home Assistant API: `http://supervisor/core/api` + `SUPERVISOR_TOKEN`.
 - Tiedostot: `/share/agent` (reseptit/, asetukset/, ruokalistat/, saapuneet/, ostokset/).
 - Keskusteluhistoria: `/data/historia/` (säilyy uudelleenkäynnistyksissä ja päivityksissä).

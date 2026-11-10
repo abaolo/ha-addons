@@ -41,6 +41,13 @@ BOT_NAME = (OPTIONS.get("name") or "Kotiapuri").strip()
 # True: agentti lukee ryhmän kaikki viestit ja päättää itse, vastaako (muuten vain maininnat)
 GROUP_REPLY_ALL = bool(OPTIONS.get("group_reply_all", False))
 SILENT = "HILJAA"  # mallin vastaus, kun ryhmäviesti ei kuulu agentille
+# Ääniviestit tekstiksi: Groqin ilmaistaso (Whisper large-v3) tai OpenAI. Avain asetuksista.
+STT_KEY = (OPTIONS.get("stt_api_key") or "").strip()
+STT_PROVIDER = (OPTIONS.get("stt_palvelu") or "groq").strip().lower()
+STT_PROVIDERS = {
+    "groq": ("https://api.groq.com/openai/v1/audio/transcriptions", "whisper-large-v3"),
+    "openai": ("https://api.openai.com/v1/audio/transcriptions", "gpt-4o-transcribe"),
+}
 RECIPES_DIR = "reseptit"
 # Home Assistant -palvelut, joita agentti saa kutsua. Laajenna harkiten.
 ALLOWED_SERVICE_DOMAINS = {"light", "switch", "scene", "script", "input_boolean", "climate", "calendar", "todo"}
@@ -86,6 +93,8 @@ def system_prompt() -> str:
         "Säännöt: hae anturiarvot aina työkaluilla, älä arvaa. Jos pyyntö muuttaisi jotain "
         "(valot, kalenteri, tiedostot) ja se on epäselvä, kysy ensin. Etsi reseptit "
         "search_files- ja read_file-työkaluilla ja kerro, mistä tiedostosta tieto tuli. "
+        "Viesti, jonka alussa on [Ääniviesti], on puheesta tunnistettua tekstiä ja voi sisältää tunnistusvirheitä: "
+        "tulkitse se järkevästi, ja jos pyyntö muuttaisi jotain ja on epäselvä, kysy ennen kuin teet. "
         "Ryhmäviesteissä viestin alussa on lähettäjän nimi, ja kaikki ryhmän jäsenet näkevät vastauksesi. "
         f"Ryhmässä sinua ei tarvitse mainita. Jos viestin alussa lukee 'ilman mainintaa', vastaa normaalisti "
         f"aina, kun viesti on kysymys tai pyyntö, johon voit vastata tai jonka voit hoitaa (esim. 'oletko "
@@ -1211,7 +1220,21 @@ async def send_whatsapp(chat, text: str) -> None:
         await wa.send_message(chat, text[i:i + 4000])
 
 
-async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, media: str = "") -> None:
+async def transcribe(audio: bytes) -> str:
+    """Muuttaa WhatsAppin ääniviestin (ogg/opus) tekstiksi."""
+    url, model = STT_PROVIDERS.get(STT_PROVIDER, STT_PROVIDERS["groq"])
+    r = await http.post(
+        url, headers={"Authorization": f"Bearer {STT_KEY}"}, timeout=60,
+        data={"model": model, "language": "fi", "response_format": "json", "temperature": "0",
+              "prompt": f"{BOT_NAME}, ruokalista, ostoslista, S-kaupat, resepti, olohuone, makuuhuone."},
+        files={"file": ("aaniviesti.ogg", audio, "audio/ogg")},
+    )
+    r.raise_for_status()
+    return (r.json().get("text") or "").strip()
+
+
+async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, media: str = "",
+                      heard: str = "") -> None:
     """key = keskustelun tunniste: lähettäjän numero tai ryhmän tunnus.
 
     may_stay_silent: ryhmäviesti, jota ei osoitettu agentille; mallin vastaus HILJAA jätetään lähettämättä
@@ -1228,6 +1251,8 @@ async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, 
             if media:
                 safe_path(media).unlink(missing_ok=True)
             return
+        if heard:  # näytetään, mitä ääniviestistä kuultiin, jotta tunnistusvirheet huomaa heti
+            reply = f"🎤 _{heard}_\n\n{reply}"
         await send_whatsapp(chat, reply)
 
 
@@ -1299,6 +1324,7 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
         return
     msg = ev.Message
     text = msg.conversation or msg.extendedTextMessage.text
+    is_voice = not text and msg.HasField("audioMessage") and bool(STT_KEY)
 
     prefix = ""
     silent_ok = False  # ryhmäviesti, jota ei osoitettu agentille: malli saa jättää vastaamatta
@@ -1312,7 +1338,7 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
                             "jos agentin pitää vastata siellä.", group)
             return
         if not addressed:
-            if not GROUP_REPLY_ALL or not (text or caption):
+            if not GROUP_REPLY_ALL or not (text or caption or is_voice):
                 return  # ryhmän muut keskustelut (ja kuvat ilman kuvatekstiä) eivät kuulu agentille
             silent_ok = True
 
@@ -1320,6 +1346,24 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
     if sender not in ALLOWED_NUMBERS:
         log.warning("Hylätty viesti lähettäjältä %s", sender or source.Sender.User)
         return
+
+    heard = ""
+    if is_voice:  # oikeudet on tarkistettu, joten vasta nyt kulutetaan tunnistuspalvelua
+        try:
+            heard = await transcribe(await wa.download_any(msg))
+        except Exception:
+            log.exception("Ääniviestin tunnistus epäonnistui")
+            if not silent_ok:
+                await send_whatsapp(source.Chat, "En saanut ääniviestistä selvää (tunnistus epäonnistui). Katso lisäosan loki.")
+            return
+        if not heard:
+            if not silent_ok:
+                await send_whatsapp(source.Chat, "En kuullut ääniviestissä puhetta.")
+            return
+        log.info("Ääniviesti tunnistettu (%d merkkiä)", len(heard))
+        if silent_ok and heard.lower().lstrip(" ,.!").startswith(BOT_NAME.lower()):
+            silent_ok = False  # puhuttiin agentille nimeltä
+        text = f"[Ääniviesti] {heard}"
 
     if source.IsGroup:
         key = f"ryhma:{source.Chat.User}"
@@ -1329,7 +1373,7 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
         key = sender
 
     if text:
-        asyncio.create_task(handle_text(source.Chat, key, prefix + with_pending(key, text), silent_ok))
+        asyncio.create_task(handle_text(source.Chat, key, prefix + with_pending(key, text), silent_ok, heard=heard))
         return
 
     for field in MEDIA_FIELDS:
@@ -1347,6 +1391,9 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
                         key, f"[Lähetin tiedoston, joka tallennettiin polkuun {path}] {caption}"),
                         silent_ok, path)
                 )
+            elif field == "audioMessage":
+                await send_whatsapp(source.Chat, f"Tallensin ääniviestin ({path}), mutta en osaa vielä kuunnella sitä: "
+                                                 "lisää puheentunnistuksen avain lisäosan asetukseen stt_api_key.")
             else:
                 pending_files.setdefault(key, []).append(path)
                 await send_whatsapp(source.Chat, f"Tallennettu: {path}. Kerro, mihin ruokaan tai reseptiin se kuuluu.")

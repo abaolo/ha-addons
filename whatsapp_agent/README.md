@@ -104,6 +104,19 @@ Kun kirjautuminen vanhenee, agentti pyytää kirjautumaan paneelissa uudelleen. 
 - Ilman selainta (`skaupat_selain: false`) agentti toimii kuvakaappauksilla: lähetä kuvat ostoslistoista tai
   tilauksista, ja se kokoaa viikon ostokset viestinä.
 
+## Ääniviestit
+
+Agentti muuttaa ääniviestit tekstiksi ja toimii kuten kirjoitetun viestin kanssa. Vastauksen alussa näkyy
+🎤 ja se, mitä agentti kuuli. Ryhmässä ääniviesti toimii kuten tekstiviesti; jos se alkaa agentin nimellä,
+agentti vastaa aina.
+
+- **Groq (oletus, ilmainen):** luo tili osoitteessa console.groq.com, sitten **API Keys → Create API Key**.
+  Ilmaistaso: Whisper large-v3, 2 000 pyyntöä ja 8 tuntia ääntä päivässä (Groqin rajat, voivat muuttua).
+- **OpenAI:** `stt_palvelu: openai` ja avain osoitteesta platform.openai.com (maksullinen, ei sisälly ChatGPT Plus -tilaukseen).
+
+Asetukset: `stt_palvelu` (groq tai openai) ja `stt_api_key`. Ääni lähetetään valitulle palvelulle
+tunnistettavaksi; ääniviestiä ei tallenneta, kun tunnistus onnistuu.
+
 ## Muisti
 
 Keskusteluhistoria tallentuu lisäosan `/data/historia/`-kansioon, joten agentti muistaa keskustelun myös
