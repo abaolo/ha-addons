@@ -104,6 +104,12 @@ Kun kirjautuminen vanhenee, agentti pyytää kirjautumaan paneelissa uudelleen. 
 - Ilman selainta (`skaupat_selain: false`) agentti toimii kuvakaappauksilla: lähetä kuvat ostoslistoista tai
   tilauksista, ja se kokoaa viikon ostokset viestinä.
 
+## Muisti
+
+Keskusteluhistoria tallentuu lisäosan `/data/historia/`-kansioon, joten agentti muistaa keskustelun myös
+päivityksen ja uudelleenkäynnistyksen jälkeen. Jokaisella yksityiskeskustelulla ja ryhmällä on oma historiansa.
+Pitkät keskustelut lyhennetään automaattisesti 40 viestin jälkeen.
+
 ## Turvallisuus
 
 - Agentti vastaa vain `allowed_numbers`-listan numeroihin, ja ryhmissä vain `allowed_groups`-listan ryhmissä.

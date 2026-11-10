@@ -54,7 +54,8 @@ SK_ENABLED = bool(OPTIONS.get("skaupat_selain", False))  # selain + S-kaupat-pan
 
 claude = AsyncAnthropic(api_key=OPTIONS["anthropic_api_key"])
 http = httpx.AsyncClient(timeout=30)
-history: dict[str, list] = {}
+history: dict[str, list] = {}  # keskustelut muistissa; tallennetaan HISTORY_DIR-kansioon
+HISTORY_DIR = Path("/data/historia")
 current_chat: contextvars.ContextVar = contextvars.ContextVar("current_chat", default=None)  # keskustelu, jota käsitellään
 locks: dict[str, asyncio.Lock] = {}
 my_ids: set[str] = set()  # agentin oma numero ja LID, täytetään yhdistettäessä
@@ -1040,13 +1041,41 @@ async def run_tool(name: str, args: dict) -> str | list:
         return f"Virhe: {e}"
 
 
+def btype(block) -> str | None:
+    """Lohkon tyyppi: historia on JSON-objekteja (dict), tuoreet vastaukset SDK:n olioita."""
+    return block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+
+
+def history_file(key: str) -> Path:
+    return HISTORY_DIR / (re.sub(r"[^0-9A-Za-z_-]", "_", key) + ".json")
+
+
+def load_history(key: str) -> list:
+    if key not in history:
+        try:
+            history[key] = json.loads(history_file(key).read_text())
+        except (OSError, ValueError):
+            history[key] = []
+    return history[key]
+
+
+def save_history(key: str) -> None:
+    try:
+        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = history_file(key).with_suffix(".tmp")
+        tmp.write_text(json.dumps(history.get(key, []), ensure_ascii=False))
+        tmp.replace(history_file(key))
+    except (OSError, TypeError, ValueError):
+        log.exception("Keskusteluhistorian tallennus epäonnistui")
+
+
 def strip_thinking(msgs: list) -> None:
     """Poistaa ajattelulohkot historiasta. Ne on sidottu keskusteluun, jossa ne syntyivät,
     joten ne pitää poistaa, jos historian alkua lyhennetään."""
     for m in msgs:
         if m["role"] != "assistant" or isinstance(m["content"], str):
             continue
-        kept = [b for b in m["content"] if getattr(b, "type", None) not in ("thinking", "redacted_thinking")]
+        kept = [b for b in m["content"] if btype(b) not in ("thinking", "redacted_thinking")]
         m["content"] = kept or "(ei tekstiä)"
 
 
@@ -1069,7 +1098,7 @@ def repair_history(msgs: list) -> None:
     while i < len(msgs):
         m = msgs[i]
         if m["role"] == "assistant" and not isinstance(m["content"], str):
-            ids = [b.id for b in m["content"] if getattr(b, "type", None) == "tool_use"]
+            ids = [b["id"] if isinstance(b, dict) else b.id for b in m["content"] if btype(b) == "tool_use"]
             if ids:
                 nxt = msgs[i + 1] if i + 1 < len(msgs) else None
                 if nxt and nxt["role"] == "user" and isinstance(nxt["content"], list) and all(
@@ -1096,8 +1125,9 @@ async def ask_claude(msgs: list):
             log.warning("Ajattelulohko hylättiin, poistetaan lohkot historiasta ja yritetään uudelleen: %s", e)
             strip_thinking(msgs)
             return await create()
-        if "tool_use" in str(e) or "tool_result" in str(e):
-            # Historia on rikki: aloitetaan alusta käyttäjän viimeisestä viestistä.
+        if len(msgs) > 1:
+            # Historia on rikki (esim. työkalukutsu ilman tulosta tai tallennettu muoto ei kelpaa):
+            # aloitetaan alusta käyttäjän viimeisestä viestistä.
             log.warning("Keskusteluhistoria hylättiin, aloitetaan alusta: %s", str(e)[:200])
             last_user = next((m for m in reversed(msgs) if m["role"] == "user" and isinstance(m["content"], str)), None)
             msgs.clear()
@@ -1108,12 +1138,13 @@ async def ask_claude(msgs: list):
 
 
 async def run_agent(sender: str, text: str) -> str:
-    msgs = history.setdefault(sender, [])
+    msgs = load_history(sender)
     repair_history(msgs)
     msgs.append({"role": "user", "content": f"[{timestamp()}] {text}"})
     for _ in range(MAX_TOOL_ROUNDS):
         resp = await ask_claude(msgs)
-        msgs.append({"role": "assistant", "content": resp.content})
+        # Tallennetaan JSON-muodossa (ajattelulohkot allekirjoituksineen säilyvät), jotta historia kestää uudelleenkäynnistyksen.
+        msgs.append({"role": "assistant", "content": [b.model_dump(mode="json", exclude_none=True) for b in resp.content]})
         if resp.stop_reason == "pause_turn":
             continue  # palvelimen verkkohaku jäi kesken; lähetetään uudelleen, niin se jatkuu
         calls = [b for b in resp.content if b.type == "tool_use"]
@@ -1135,10 +1166,12 @@ async def run_agent(sender: str, text: str) -> str:
     else:
         msgs.append({"role": "assistant", "content": "Tehtävä keskeytyi liian monen vaiheen jälkeen."})
         trim_history(msgs)
+        save_history(sender)
         return "Tehtävä vaati liian monta vaihetta. Kokeile pilkkoa pyyntö pienempiin osiin."
 
     reply = "\n".join(b.text for b in resp.content if b.type == "text").strip()
     trim_history(msgs)
+    save_history(sender)
     return reply or "En saanut vastausta muodostettua."
 
 

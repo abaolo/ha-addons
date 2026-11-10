@@ -17,7 +17,8 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
   istunto `/data/whatsapp.sqlite3`. Prepaid-numero, koska tapa rikkoo WhatsAppin ehtoja.
 - LLM: Claude API, malli asetuksesta `model`.
 - Home Assistant API: `http://supervisor/core/api` + `SUPERVISOR_TOKEN`.
-- Tiedostot: `/share/agent` (reseptit/, asetukset/, ruokalistat/, saapuneet/).
+- Tiedostot: `/share/agent` (reseptit/, asetukset/, ruokalistat/, saapuneet/, ostokset/).
+- Keskusteluhistoria: `/data/historia/` (säilyy uudelleenkäynnistyksissä ja päivityksissä).
 
 ## Säännöt
 
@@ -40,7 +41,7 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 
 1. Vianetsintä ensikäynnistyksessä (neonize-yhteys, QR) lokin perusteella.
 2. PDF- ja kuvatiedostojen lukeminen (document/image block), esim. resepti kuvasta → `reseptit/*.md`.
-3. Keskusteluhistorian tallennus `/data`-kansioon.
+3. Keskusteluhistorian tallennus: tehty (0.6.4), `/data/historia/<keskustelu>.json`, lohkot JSON-muodossa.
 4. Ajastetut viestit (iltaisin "mitä söitte tänään?", ruokalistaehdotus kahden viikon välein).
 5. S-kaupat (0.6.0, käyttäjän päätös ja hyväksyntä): lisäosan oma Chromium virtuaalinäytöllä, käyttäjä kirjautuu
    itse ingress-paneelissa (noVNC), agentti tekee GraphQL-kyselyt s-kaupat.fi-välilehdeltä (`sk_call`,
