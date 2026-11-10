@@ -18,6 +18,8 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 - LLM: Claude API, malli asetuksesta `model`.
 - Ääniviestit: `transcribe()`, Groq Whisper large-v3 (ilmainen) tai OpenAI, asetukset `stt_palvelu`, `stt_api_key`.
 - Home Assistant API: `http://supervisor/core/api` + `SUPERVISOR_TOKEN`.
+- Google-kalenteri suoraan (`google_*`, tapahtumien värit): device flow, refresh token `/data/google.json`,
+  asetukset `google_client_id`, `google_client_secret`; värisäännöt `asetukset/kalenteri.md`.
 - Tiedostot: `/share/agent` (reseptit/, asetukset/, ruokalistat/, saapuneet/, ostokset/).
 - Keskusteluhistoria: `/data/historia/` (säilyy uudelleenkäynnistyksissä ja päivityksissä).
 

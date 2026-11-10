@@ -13,6 +13,7 @@ import os
 import re
 from datetime import datetime
 from io import BytesIO
+from urllib.parse import quote
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -43,6 +44,9 @@ GROUP_REPLY_ALL = bool(OPTIONS.get("group_reply_all", False))
 SILENT = "HILJAA"  # mallin vastaus, kun ryhmäviesti ei kuulu agentille
 # Ääniviestit tekstiksi: Groqin ilmaistaso (Whisper large-v3) tai OpenAI. Avain asetuksista.
 STT_KEY = (OPTIONS.get("stt_api_key") or "").strip()
+# Google-kalenteri suoraan (tapahtumien värit yms.): sama TV-tyyppinen OAuth-client kuin Home Assistantilla.
+GOOGLE_CLIENT_ID = (OPTIONS.get("google_client_id") or "").strip()
+GOOGLE_CLIENT_SECRET = (OPTIONS.get("google_client_secret") or "").strip()
 STT_PROVIDER = (OPTIONS.get("stt_palvelu") or "groq").strip().lower()
 STT_PROVIDERS = {
     "groq": ("https://api.groq.com/openai/v1/audio/transcriptions", "whisper-large-v3"),
@@ -104,6 +108,13 @@ def system_prompt() -> str:
         f"Epäselvissä tapauksissa vastaa.\n"
         "Käyttäjän WhatsAppissa lähettämät tiedostot tallentuvat kansioon saapuneet; "
         "siirrä ne pyydettäessä oikeaan kansioon move_file-työkalulla.\n"
+        "Kalenteri: luo, muokkaa ja poista tapahtumia google_*-työkaluilla, kun Google-yhteys on käytössä (niillä "
+        "voi antaa tapahtumalle värin); muuten käytä Home Assistantin calendar.create_event-palvelua. Lue ennen "
+        "tapahtuman luontia asetukset/kalenteri.md (kenen menot mihin kalenteriin ja millä värillä) ja noudata sitä; "
+        "kun käyttäjä kertoo uuden pysyvän kalenteritoiveen (esim. 'mun menot sinisellä'), kirjaa se sinne heti. "
+        "Merkitse tapahtuman nimeen, kenen meno se on, jos se ei käy ilmi. Poista tapahtumia vain käyttäjän "
+        "pyynnöstä. Jos Google-yhteyttä ei ole ja tarvitaan väriä, kerro, että yhteys avataan pyytämällä "
+        "'yhdistä Google-kalenteri'.\n"
         "Ruokapäiväkirja: kun käyttäjä kertoo, mitä on syöty (tai vahvistaa listan ruoan "
         "toteutuneen), lisää rivi tiedostoon ruokalistat/syodyt.md append_file-työkalulla "
         "muodossa '- PP.KK.VVVV: ruoka (resepti-tiedosto jos tiedossa) – arvio/kommentti'. "
@@ -367,6 +378,75 @@ TOOLS = [
                 "nimi": {"type": "string", "description": "Ruoan nimi, käytetään tiedostonimenä. Oletus: sivun otsikko."},
             },
             "required": ["url"],
+        },
+    },
+    {
+        "name": "google_yhdista",
+        "description": "Aloittaa Google-kalenterin kertavaltuutuksen: palauttaa linkin ja koodin, jotka annat "
+        "käyttäjälle. Agentti ilmoittaa itse, kun käyttäjä on hyväksynyt.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "google_kalenterit",
+        "description": "Listaa Google-kalenterit (nimi, tunnus, oikeudet) ja käytettävissä olevat tapahtumavärit.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "google_hae_tapahtumat",
+        "description": "Hakee Google-kalenterin tapahtumat (tunnus, nimi, aika, väri) aikaväliltä, valinnaisesti hakusanalla.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kalenteri": {"type": "string", "description": "Kalenterin nimi tai tunnus, esim. Family"},
+                "alku": {"type": "string", "description": "ISO 8601, esim. 2026-11-14T00:00:00"},
+                "loppu": {"type": "string", "description": "ISO 8601"},
+                "haku": {"type": "string"},
+            },
+            "required": ["kalenteri", "alku", "loppu"],
+        },
+    },
+    {
+        "name": "google_luo_tapahtuma",
+        "description": "Luo tapahtuman Google-kalenteriin, myös värillä. Ajat Suomen aikaa.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kalenteri": {"type": "string"},
+                "otsikko": {"type": "string"},
+                "alku": {"type": "string", "description": "2026-11-14T13:00:00 tai koko päivälle 2026-11-14"},
+                "loppu": {"type": "string", "description": "2026-11-14T14:00:00 tai koko päivälle seuraava päivä"},
+                "vari": {"type": "string", "description": "Värin nimi (ks. google_kalenterit), esim. sininen"},
+                "kuvaus": {"type": "string"},
+                "paikka": {"type": "string"},
+            },
+            "required": ["kalenteri", "otsikko", "alku", "loppu"],
+        },
+    },
+    {
+        "name": "google_muokkaa_tapahtuma",
+        "description": "Muuttaa olemassa olevaa tapahtumaa (tunnus google_hae_tapahtumat-työkalulla): väri, otsikko, aika, kuvaus, paikka.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kalenteri": {"type": "string"},
+                "tapahtuma_id": {"type": "string"},
+                "otsikko": {"type": "string"},
+                "alku": {"type": "string"},
+                "loppu": {"type": "string"},
+                "vari": {"type": "string"},
+                "kuvaus": {"type": "string"},
+                "paikka": {"type": "string"},
+            },
+            "required": ["kalenteri", "tapahtuma_id"],
+        },
+    },
+    {
+        "name": "google_poista_tapahtuma",
+        "description": "Poistaa tapahtuman Google-kalenterista. Vain käyttäjän pyynnöstä.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"kalenteri": {"type": "string"}, "tapahtuma_id": {"type": "string"}},
+            "required": ["kalenteri", "tapahtuma_id"],
         },
     },
     {
@@ -958,6 +1038,209 @@ async def skaupat_tool(name: str, args: dict) -> str:
     return f"Tuntematon työkalu: {name}"
 
 
+# --- Google-kalenteri ---
+GOOGLE_STATE = Path("/data/google.json")  # kirjautumisavain (refresh token); ei koskaan lokiin
+GOOGLE_SCOPE = "https://www.googleapis.com/auth/calendar"
+GCAL = "https://www.googleapis.com/calendar/v3"
+# Googlen tapahtumavärit (colorId) suomeksi
+GOOGLE_COLORS = {
+    "1": ("laventeli", "vaaleanvioletti"), "2": ("salvia", "vaaleanvihreä"), "3": ("viinirypäle", "violetti"),
+    "4": ("flamingo", "punertava"), "5": ("banaani", "keltainen"), "6": ("mandariini", "oranssi"),
+    "7": ("riikinkukko", "turkoosi"), "8": ("grafiitti", "harmaa"), "9": ("mustikka", "sininen"),
+    "10": ("basilika", "vihreä"), "11": ("tomaatti", "punainen"),
+}
+# Muut nimet, joilla käyttäjä voi pyytää väriä
+GOOGLE_COLOR_ALIASES = {"lohenpunainen": "4", "vaaleanpunainen": "4", "pinkki": "4", "lohi": "4",
+                        "tummansininen": "9", "vaaleansininen": "7", "liila": "3", "lila": "3", "kulta": "5"}
+_google: dict = {"access": "", "exp": 0.0, "calendars": None}
+
+
+class GoogleError(Exception):
+    pass
+
+
+def google_color_id(name: str) -> str:
+    n = (name or "").strip().lower()
+    if n in GOOGLE_COLORS:
+        return n
+    if n in GOOGLE_COLOR_ALIASES:
+        return GOOGLE_COLOR_ALIASES[n]
+    for cid, names in GOOGLE_COLORS.items():
+        if n in names or any(n == w or n.startswith(w) for w in names):
+            return cid
+    raise GoogleError(f"Tuntematon väri '{name}'. Värit: " + ", ".join(f"{b} ({a})" for a, b in GOOGLE_COLORS.values()))
+
+
+def google_state() -> dict:
+    try:
+        return json.loads(GOOGLE_STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+async def google_token() -> str:
+    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
+        raise GoogleError("Google-yhteys ei ole käytössä: lisää google_client_id ja google_client_secret lisäosan asetuksiin.")
+    if _google["access"] and _google["exp"] > datetime.now().timestamp() + 60:
+        return _google["access"]
+    refresh = google_state().get("refresh_token")
+    if not refresh:
+        raise GoogleError("Google-kalenteria ei ole yhdistetty: pyydä 'yhdistä Google-kalenteri'.")
+    r = await http.post("https://oauth2.googleapis.com/token", data={
+        "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+        "refresh_token": refresh, "grant_type": "refresh_token"})
+    if r.status_code != 200:
+        log.warning("Google-avaimen uusiminen epäonnistui: %s %s", r.status_code, r.text[:200])
+        raise GoogleError("Google-yhteys on vanhentunut: pyydä 'yhdistä Google-kalenteri' uudelleen.")
+    data = r.json()
+    _google["access"], _google["exp"] = data["access_token"], datetime.now().timestamp() + data.get("expires_in", 3600)
+    return _google["access"]
+
+
+async def gcal(method: str, path: str, **kw) -> dict:
+    token = await google_token()
+    r = await http.request(method, GCAL + path, headers={"Authorization": f"Bearer {token}"}, timeout=30, **kw)
+    if r.status_code == 204:
+        return {}
+    if r.status_code >= 400:
+        try:
+            msg = r.json().get("error", {}).get("message", "")
+        except ValueError:
+            msg = r.text[:200]
+        raise GoogleError(f"Google-kalenteri vastasi {r.status_code}: {msg}")
+    return r.json()
+
+
+async def google_calendar_id(name: str) -> str:
+    if _google["calendars"] is None:
+        items = (await gcal("GET", "/users/me/calendarList")).get("items", [])
+        _google["calendars"] = {c["id"]: c for c in items}
+    cals = _google["calendars"]
+    if name in cals:
+        return name
+    n = name.strip().lower()
+    for c in cals.values():
+        if (c.get("summaryOverride") or c.get("summary", "")).lower() == n or c.get("summary", "").lower() == n:
+            return c["id"]
+    for c in cals.values():
+        if n in (c.get("summaryOverride") or c.get("summary", "")).lower():
+            return c["id"]
+    raise GoogleError(f"Kalenteria '{name}' ei löytynyt. Kalenterit: " +
+                      ", ".join(c.get("summaryOverride") or c.get("summary", "") for c in cals.values()))
+
+
+def google_when(value: str) -> dict:
+    value = value.strip()
+    if len(value) == 10:  # koko päivä
+        return {"date": value}
+    return {"dateTime": value[:19], "timeZone": "Europe/Helsinki"}
+
+
+def google_event_text(e: dict) -> str:
+    start = e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", "")
+    end = e.get("end", {}).get("dateTime") or e.get("end", {}).get("date", "")
+    color = GOOGLE_COLORS.get(e.get("colorId", ""), ("", "kalenterin oma väri"))[1]
+    return f"- {e.get('summary', '(ei nimeä)')} | {start[:16]} – {end[:16]} | väri: {color} | id {e['id']}"
+
+
+async def google_device_flow(chat) -> str:
+    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
+        raise GoogleError("Lisää ensin google_client_id ja google_client_secret lisäosan asetuksiin.")
+    r = await http.post("https://oauth2.googleapis.com/device/code",
+                        data={"client_id": GOOGLE_CLIENT_ID, "scope": GOOGLE_SCOPE})
+    if r.status_code != 200:
+        raise GoogleError(f"Valtuutuksen aloitus epäonnistui ({r.status_code}): {r.text[:200]}")
+    d = r.json()
+
+    async def poll():
+        interval, deadline = d.get("interval", 5), datetime.now().timestamp() + d.get("expires_in", 1800)
+        while datetime.now().timestamp() < deadline:
+            await asyncio.sleep(interval)
+            t = await http.post("https://oauth2.googleapis.com/token", data={
+                "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET, "device_code": d["device_code"],
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code"})
+            body = t.json()
+            if t.status_code == 200 and body.get("refresh_token"):
+                GOOGLE_STATE.write_text(json.dumps({"refresh_token": body["refresh_token"]}))
+                GOOGLE_STATE.chmod(0o600)
+                _google.update(access=body["access_token"], exp=datetime.now().timestamp() + body.get("expires_in", 3600),
+                               calendars=None)
+                log.info("Google-kalenteri yhdistetty")
+                if chat is not None:
+                    await send_whatsapp(chat, "Google-kalenteri on nyt yhdistetty. ✅")
+                return
+            err = body.get("error")
+            if err == "slow_down":
+                interval += 5
+            elif err != "authorization_pending":
+                log.warning("Google-valtuutus päättyi: %s", err)
+                if chat is not None:
+                    await send_whatsapp(chat, f"Google-kalenterin yhdistäminen ei onnistunut ({err}).")
+                return
+        if chat is not None:
+            await send_whatsapp(chat, "Google-kalenterin yhdistämisen koodi vanheni. Pyydä uusi tarvittaessa.")
+
+    asyncio.create_task(poll())
+    return (f"Pyydä käyttäjää avaamaan {d['verification_url']} ja syöttämään koodi {d['user_code']}, ja hyväksymään "
+            "pääsy kalenteriin (Google voi varoittaa vahvistamattomasta sovelluksesta: Advanced → Go to …). "
+            "Ilmoitan itse, kun yhteys on valmis.")
+
+
+async def google_tool(name: str, args: dict) -> str:
+    try:
+        if name == "google_yhdista":
+            return await google_device_flow(current_chat.get())
+        if name == "google_kalenterit":
+            items = (await gcal("GET", "/users/me/calendarList")).get("items", [])
+            _google["calendars"] = {c["id"]: c for c in items}
+            lines = [f"- {c.get('summaryOverride') or c.get('summary')} (id {c['id']}, oikeus {c.get('accessRole')})"
+                     for c in items]
+            return "Kalenterit:\n" + "\n".join(lines) + "\n\nTapahtumavärit: " + ", ".join(
+                f"{b} ({a})" for a, b in GOOGLE_COLORS.values())
+        cal = await google_calendar_id(args["kalenteri"])
+        cal_path = "/calendars/" + quote(cal, safe="")  # tunnuksessa voi olla @ ja #
+        if name == "google_hae_tapahtumat":
+            def local(value: str, end: bool) -> str:  # Suomen aika -> RFC 3339 aikavyöhykkeineen
+                v = value.strip()
+                v = v[:19] if len(v) > 10 else v + ("T23:59:59" if end else "T00:00:00")
+                return datetime.fromisoformat(v).replace(tzinfo=TZ).isoformat()
+
+            params = {"timeMin": local(args["alku"], False), "timeMax": local(args["loppu"], True),
+                      "singleEvents": "true", "orderBy": "startTime", "maxResults": "50", "timeZone": "Europe/Helsinki"}
+            if args.get("haku"):
+                params["q"] = args["haku"]
+            items = (await gcal("GET", cal_path + "/events", params=params)).get("items", [])
+            return "\n".join(google_event_text(e) for e in items) or "Ei tapahtumia."
+        if name in ("google_luo_tapahtuma", "google_muokkaa_tapahtuma"):
+            body = {}
+            if args.get("otsikko"):
+                body["summary"] = args["otsikko"]
+            if args.get("alku"):
+                body["start"] = google_when(args["alku"])
+            if args.get("loppu"):
+                body["end"] = google_when(args["loppu"])
+            if args.get("vari"):
+                body["colorId"] = google_color_id(args["vari"])
+            if args.get("kuvaus"):
+                body["description"] = args["kuvaus"]
+            if args.get("paikka"):
+                body["location"] = args["paikka"]
+            if name == "google_luo_tapahtuma":
+                e = await gcal("POST", cal_path + "/events", json=body)
+                return "Luotu: " + google_event_text(e)
+            e = await gcal("PATCH", cal_path + "/events/" + args["tapahtuma_id"], json=body)
+            return "Muutettu: " + google_event_text(e)
+        if name == "google_poista_tapahtuma":
+            await gcal("DELETE", cal_path + "/events/" + args["tapahtuma_id"])
+            return "Tapahtuma poistettu."
+    except GoogleError as e:
+        return str(e)
+    except httpx.HTTPError as e:
+        log.warning("Google-kalenteri: %s", e)
+        return f"Google-kalenteri ei vastannut ({type(e).__name__}). Yritä hetken päästä."
+    return f"Tuntematon työkalu: {name}"
+
+
 async def send_image_to_chat(rel: str, caption: str = "") -> str:
     chat = current_chat.get()
     if chat is None:
@@ -1054,6 +1337,9 @@ async def run_tool(name: str, args: dict) -> str | list:
 
         if name.startswith("skaupat_"):
             return await skaupat_tool(name, args)
+
+        if name.startswith("google_"):
+            return await google_tool(name, args)
 
         if name == "laheta_kuva":
             return await send_image_to_chat(args["path"], args.get("teksti", ""))

@@ -104,6 +104,21 @@ Kun kirjautuminen vanhenee, agentti pyytää kirjautumaan paneelissa uudelleen. 
 - Ilman selainta (`skaupat_selain: false`) agentti toimii kuvakaappauksilla: lähetä kuvat ostoslistoista tai
   tilauksista, ja se kokoaa viikon ostokset viestinä.
 
+## Google-kalenteri (värit)
+
+Home Assistantin kalenteripalvelu ei osaa tapahtumien värejä, joten agentti voi käyttää Google-kalenteria
+suoraan: luoda, hakea, muokata (myös väri) ja pyynnöstä poistaa tapahtumia.
+
+1. Asetukset: `google_client_id` ja `google_client_secret` (Google Cloudin *TV and Limited Input devices*
+   -client, sama kuin Home Assistantin Google Calendar -integraatiossa). Tallenna.
+2. Kirjoita agentille *"yhdistä Google-kalenteri"*. Avaa sen antama linkki (google.com/device), syötä koodi ja
+   hyväksy. Agentti ilmoittaa, kun yhteys on valmis.
+3. Kerro värisäännöt, esim. *"Antin menot mustikalla, yhteiset banaanilla, Hannamarian flamingolla"*. Agentti
+   tallentaa ne tiedostoon `asetukset/kalenteri.md` ja noudattaa niitä.
+
+Värit (Googlen nimet): laventeli, salvia, viinirypäle, flamingo, banaani, mandariini, riikinkukko, grafiitti,
+mustikka, basilika, tomaatti. Tapahtuman väri näkyy kaikille, jotka näkevät kalenterin.
+
 ## Ääniviestit
 
 Agentti muuttaa ääniviestit tekstiksi ja toimii kuten kirjoitetun viestin kanssa. Vastauksen alussa näkyy
