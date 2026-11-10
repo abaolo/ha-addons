@@ -47,6 +47,7 @@ TZ = ZoneInfo("Europe/Helsinki")
 MAX_HISTORY = 40  # kun historia ylittää tämän, se lyhennetään kerralla HISTORY_KEEP-viestiin
 HISTORY_KEEP = 16
 MAX_TOOL_ROUNDS = 25
+MAX_OUTPUT_TOKENS = 16_000  # isot tehtävät (esim. kymmeniä tiedostoja kerralla) tarvitsevat tilaa
 
 SK_STORE = (OPTIONS.get("skaupat_kauppa") or "").strip()  # kauppa, josta tilataan
 SK_ENABLED = bool(OPTIONS.get("skaupat_selain", False))  # selain + S-kaupat-paneeli (run.sh käynnistää näytön)
@@ -1057,37 +1058,75 @@ def trim_history(msgs: list) -> None:
     strip_thinking(msgs)
 
 
+def repair_history(msgs: list) -> None:
+    """Varmistaa, että jokaista työkalukutsua seuraa sen tulos. Keskeytynyt kierros (esim. vastaus katkesi
+    pituusrajaan) jättäisi muuten historiaan kutsun ilman tulosta, ja API hylkäisi kaikki seuraavat viestit."""
+    i = 0
+    while i < len(msgs):
+        m = msgs[i]
+        if m["role"] == "assistant" and not isinstance(m["content"], str):
+            ids = [b.id for b in m["content"] if getattr(b, "type", None) == "tool_use"]
+            if ids:
+                nxt = msgs[i + 1] if i + 1 < len(msgs) else None
+                if nxt and nxt["role"] == "user" and isinstance(nxt["content"], list) and all(
+                        isinstance(b, dict) and b.get("type") == "tool_result" for b in nxt["content"]):
+                    have = {b["tool_use_id"] for b in nxt["content"]}
+                    nxt["content"] += [{"type": "tool_result", "tool_use_id": x, "is_error": True,
+                                        "content": "Keskeytyi."} for x in ids if x not in have]
+                else:
+                    msgs.insert(i + 1, {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": x, "is_error": True, "content": "Keskeytyi."}
+                        for x in ids]})
+                    log.warning("Historiasta puuttui %d työkalutulosta, lisättiin keskeytyneiksi", len(ids))
+        i += 1
+
+
 async def ask_claude(msgs: list):
+    def create():
+        return claude.messages.create(model=OPTIONS["model"], max_tokens=MAX_OUTPUT_TOKENS,
+                                      system=system_prompt(), tools=TOOLS, messages=msgs)
     try:
-        return await claude.messages.create(
-            model=OPTIONS["model"], max_tokens=8192, system=system_prompt(), tools=TOOLS, messages=msgs
-        )
+        return await create()
     except BadRequestError as e:
-        if "thinking" not in str(e):
-            raise
-        log.warning("Ajattelulohko hylättiin, poistetaan lohkot historiasta ja yritetään uudelleen: %s", e)
-        strip_thinking(msgs)
-        return await claude.messages.create(
-            model=OPTIONS["model"], max_tokens=8192, system=system_prompt(), tools=TOOLS, messages=msgs
-        )
+        if "thinking" in str(e):
+            log.warning("Ajattelulohko hylättiin, poistetaan lohkot historiasta ja yritetään uudelleen: %s", e)
+            strip_thinking(msgs)
+            return await create()
+        if "tool_use" in str(e) or "tool_result" in str(e):
+            # Historia on rikki: aloitetaan alusta käyttäjän viimeisestä viestistä.
+            log.warning("Keskusteluhistoria hylättiin, aloitetaan alusta: %s", str(e)[:200])
+            last_user = next((m for m in reversed(msgs) if m["role"] == "user" and isinstance(m["content"], str)), None)
+            msgs.clear()
+            if last_user:
+                msgs.append(last_user)
+            return await create()
+        raise
 
 
 async def run_agent(sender: str, text: str) -> str:
     msgs = history.setdefault(sender, [])
+    repair_history(msgs)
     msgs.append({"role": "user", "content": f"[{timestamp()}] {text}"})
     for _ in range(MAX_TOOL_ROUNDS):
         resp = await ask_claude(msgs)
         msgs.append({"role": "assistant", "content": resp.content})
         if resp.stop_reason == "pause_turn":
             continue  # palvelimen verkkohaku jäi kesken; lähetetään uudelleen, niin se jatkuu
-        if resp.stop_reason != "tool_use":
+        calls = [b for b in resp.content if b.type == "tool_use"]
+        if not calls or resp.stop_reason not in ("tool_use", "max_tokens"):
             break
         results = []
-        for block in resp.content:
-            if block.type == "tool_use":
-                log.info("Työkalu: %s %s", block.name, block.input)
-                out = await run_tool(block.name, block.input)
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
+        for n, block in enumerate(calls):
+            if resp.stop_reason == "max_tokens" and n == len(calls) - 1:
+                # Vastaus katkesi pituusrajaan: viimeinen kutsu voi olla kesken, joten sitä ei ajeta.
+                log.warning("Vastaus katkesi pituusrajaan kesken työkalun %s", block.name)
+                out = ("Vastauksesi katkesi pituusrajaan ennen kuin tämä työkalukutsu valmistui, joten sitä ei "
+                       "suoritettu. Jatka tekemällä työ pienemmissä osissa (vähemmän tiedostoja kerralla).")
+                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True, "content": out})
+                continue
+            log.info("Työkalu: %s %s", block.name, block.input)
+            out = await run_tool(block.name, block.input)
+            results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
         msgs.append({"role": "user", "content": results})
     else:
         msgs.append({"role": "assistant", "content": "Tehtävä keskeytyi liian monen vaiheen jälkeen."})

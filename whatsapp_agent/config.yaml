@@ -1,5 +1,5 @@
 name: WhatsApp Agent
-version: "0.6.1"
+version: "0.6.2"
 slug: whatsapp_agent
 description: Claude-agentti WhatsAppissa (linkitetty laite) – pääsy Home Assistantiin, kalentereihin ja tiedostoihin
 url: https://github.com/abaolo/ha-addons/tree/main/whatsapp_agent
