@@ -48,15 +48,17 @@ Lähetä omasta puhelimestasi WhatsApp-viesti prepaid-numeroon, esim.
 - Google-kalenteri: lisää Home Assistantiin **Google Calendar** -integraatio. Agentti löytää sen automaattisesti.
 - Ostoslista: lisää **Shopping list** -integraatio.
 
-## Kotisivun ruokalista ja reseptit
+## Reseptit
 
-Agentti voi lukea kotisivun ruokalistasovelluksen tiedot (tähtiarviot, reseptilinkit, omat ehdotukset,
-aiemmat arvonnat). Täytä lisäosan asetuksiin:
-- `supabase_url`: sama kuin kotisivun `VITE_SUPABASE_URL` (Vercelin ympäristömuuttujat)
-- `supabase_key`: sama kuin `VITE_SUPABASE_KEY`
+Jokaisella ruoalla on oma tiedosto `\\192.168.1.166\share\agent\reseptit\<ruoka>.md` (arvio, linkki,
+ainekset, ohje) ja kuvat kansiossa `reseptit\kuvat\`. Arviot on koottu tiedostoon `reseptit\arviot.md`.
 
-Reseptin linkistä agentti osaa tallentaa reseptin kansioon `reseptit/`, esim.
-*"tallenna reseptit kaikille ruoille, joilla on linkki kotisivulla"*.
+**Siirto kotisivulta (kerran):** kotisivu → *Siirrä data* → *Hae data* → *Kopioi leikepöydälle*. Liitä teksti
+Muistioon ja tallenna nimellä `kotisivu.json` kansioon `\\192.168.1.166\share\agent\saapuneet\`. Kirjoita sitten
+agentille *"tuo kotisivun data saapuneet/kotisivu.json"*.
+
+Reseptin linkistä agentti tallentaa ainekset ja ohjeen ruoan tiedostoon, esim.
+*"hae reseptit kaikille ruoille, joilla on linkki"*.
 
 ## Ryhmät
 
