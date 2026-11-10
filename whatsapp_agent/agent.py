@@ -4,6 +4,7 @@ WhatsApp-yhteys: epävirallinen linkitetty laite (neonize / whatsmeow), kuten Wh
 Huom: rikkoo WhatsAppin käyttöehtoja, numero voidaan estää. Käytä erillistä numeroa.
 """
 import asyncio
+import contextvars
 import base64
 import html
 import json
@@ -58,6 +59,7 @@ SK_STORE = (OPTIONS.get("skaupat_kauppa") or "").strip()
 claude = AsyncAnthropic(api_key=OPTIONS["anthropic_api_key"])
 http = httpx.AsyncClient(timeout=30)
 history: dict[str, list] = {}
+current_chat: contextvars.ContextVar = contextvars.ContextVar("current_chat", default=None)  # keskustelu, jota käsitellään
 locks: dict[str, asyncio.Lock] = {}
 my_ids: set[str] = set()  # agentin oma numero ja LID, täytetään yhdistettäessä
 wa = NewAClient("/data/whatsapp.sqlite3")
@@ -128,6 +130,8 @@ def system_prompt() -> str:
         "se on valittuna, ja jos ei ole, pyydä käyttäjää vaihtamaan se (älä vaihda itse). Kirjautuminen: kirjoita "
         "sähköpostikenttään {SPOSTI} ja salasanakenttään {SALASANA}, työkalu korvaa ne oikeilla tunnuksilla. "
         "Jos palvelu pyytää sähköpostiin tullutta koodia, kysy se käyttäjältä ja kirjoita se, kun hän vastaa. "
+        "Kuvavarmennetta (CAPTCHA) et ratkaise etkä ohita itse: lähetä se käyttäjälle "
+        "skaupat_kuvakaappaus(laheta_kayttajalle=true) ja kirjoita kenttään käyttäjän vastaus sellaisenaan. "
         "Ostoslistat (Minä → Ostoslistat) on nimetty ruokien mukaan: lisää ruokalistan ruokia vastaavat listat "
         "koriin listan omalla toiminnolla; jos ruoalle ei ole listaa, kerro siitä. Kun luet ostoslistat (tai "
         "käyttäjä lähettää niistä kuvakaappauksia), lisää ruokalistaan ruoat, joita siellä ei vielä ole: luo "
@@ -320,8 +324,26 @@ TOOLS = [
     },
     {
         "name": "skaupat_kuvakaappaus",
-        "description": "Ottaa kuvakaappauksen nykyisestä sivusta ja näyttää sen (tallentuu kansioon s-kaupat).",
-        "input_schema": {"type": "object", "properties": {}},
+        "description": "Ottaa kuvakaappauksen nykyisestä sivusta (tallentuu kansioon s-kaupat) ja näyttää sen sinulle. "
+        "laheta_kayttajalle=true lähettää kuvan WhatsAppiin käyttäjälle eikä näytä sitä sinulle: käytä tätä "
+        "kuvavarmenteessa (CAPTCHA), jonka käyttäjä ratkaisee itse.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "laheta_kayttajalle": {"type": "boolean"},
+                "teksti": {"type": "string", "description": "Kuvateksti WhatsAppiin"},
+            },
+        },
+    },
+    {
+        "name": "laheta_kuva",
+        "description": "Lähettää agentin kansiossa olevan kuvan (esim. reseptit/kuvat/kanakeitto-2.jpg) WhatsAppiin "
+        "tähän keskusteluun.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "teksti": {"type": "string", "description": "Kuvateksti"}},
+            "required": ["path"],
+        },
     },
     {
         "name": "tallenna_resepti",
@@ -723,8 +745,21 @@ async def skaupat_tool(name: str, args: dict) -> str | list:
                 old.unlink()  # säilytetään 20 uusinta
             rel = f"{SK_SHOTS}/kuva-{datetime.now(TZ):%Y%m%d-%H%M%S}.png"
             await page.screenshot(path=str(safe_path(rel)))
+            if args.get("laheta_kayttajalle"):
+                return await send_image_to_chat(rel, args.get("teksti", ""))  # malli ei näe kuvaa
             return image_block(rel)
     return f"Tuntematon työkalu: {name}"
+
+
+async def send_image_to_chat(rel: str, caption: str = "") -> str:
+    chat = current_chat.get()
+    if chat is None:
+        return "Ei keskustelua, johon kuvan voisi lähettää."
+    path = safe_path(rel)
+    if not path.is_file() or path.suffix.lower() not in IMAGE_EXTS:
+        return f"Ei kuvatiedosto: {rel}"
+    await wa.send_image(chat, path.read_bytes(), caption=caption or None)
+    return f"Kuva {rel} lähetetty WhatsAppiin."
 
 
 async def run_tool(name: str, args: dict) -> str | list:
@@ -800,6 +835,9 @@ async def run_tool(name: str, args: dict) -> str | list:
 
         if name.startswith("skaupat_"):
             return await skaupat_tool(name, args)
+
+        if name == "laheta_kuva":
+            return await send_image_to_chat(args["path"], args.get("teksti", ""))
 
         if name == "lue_kuva":
             return image_block(args["path"])
@@ -897,6 +935,7 @@ async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, 
     may_stay_silent: ryhmäviesti, jota ei osoitettu agentille; mallin vastaus HILJAA jätetään lähettämättä
     (ja mukana tullut tiedosto poistetaan)."""
     async with locks.setdefault(key, asyncio.Lock()):
+        current_chat.set(chat)
         try:
             reply = await run_agent(key, text)
         except Exception:
