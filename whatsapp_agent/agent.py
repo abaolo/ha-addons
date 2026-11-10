@@ -713,8 +713,12 @@ async def sk_call(name: str, variables: dict, auth: bool = False) -> dict:
                     body = json.loads(res["text"])
                 except ValueError:
                     body = None
-            codes = {((e.get("extensions") or {}).get("code")) for e in (body or {}).get("errors") or []}
-            auth_failed = res.get("status") == 401 or bool(codes & {"UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"})
+            errors = (body or {}).get("errors") or []
+            codes = {str((e.get("extensions") or {}).get("code") or "").upper() for e in errors}
+            texts = " ".join(str(e.get("message", "")) for e in errors).lower()
+            auth_failed = (res.get("status") in (401, 403) and body is not None) or bool(
+                codes & {"UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"}) or any(
+                w in texts for w in ("unauthorized", "unauthenticated", "not authenticated", "forbidden"))
             refused = body is None and res.get("status") in (0, 403, 429)
             if (auth_failed or refused) and attempt == 0:
                 # Sivu uusii oman kirjautumisensa latautuessaan; yritetään kerran uudelleen.
