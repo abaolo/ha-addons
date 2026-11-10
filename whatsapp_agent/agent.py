@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import signal
 from datetime import datetime
 from io import BytesIO
 from urllib.parse import quote
@@ -778,6 +779,7 @@ async def sk_browser():
     if _skb["pw"] is None:
         _skb["pw"] = await async_playwright().start()
     SK_PROFILE.mkdir(parents=True, exist_ok=True)
+    sk_mark_clean_exit()
     # Tavallinen näkyvä selainikkuna, joka ei naamioi itseään ohjelmalla ohjatuksi.
     ctx = await _skb["pw"].chromium.launch_persistent_context(
         str(SK_PROFILE), headless=False, locale="fi-FI", timezone_id="Europe/Helsinki", no_viewport=True,
@@ -789,6 +791,27 @@ async def sk_browser():
         await page.goto(SK_SITE, wait_until="domcontentloaded", timeout=45_000)
     log.info("S-kaupat-selain käynnissä")
     return page
+
+
+def sk_mark_clean_exit() -> None:
+    """Merkitsee selainprofiilin siististi suljetuksi, ettei Chromium kysy 'Restore pages?' uudelleenkäynnistyksen
+    jälkeen (lisäosa voidaan pysäyttää kesken, jolloin selain ei ehdi tallentaa tilaansa)."""
+    prefs = SK_PROFILE / "Default" / "Preferences"
+    try:
+        data = json.loads(prefs.read_text())
+        data.setdefault("profile", {}).update(exit_type="Normal", exited_cleanly=True)
+        prefs.write_text(json.dumps(data))
+    except (OSError, ValueError):
+        pass  # ensimmäinen käynnistys: profiilia ei vielä ole
+
+
+async def sk_close_browser() -> None:
+    if _skb["ctx"] is not None:
+        try:
+            await asyncio.wait_for(_skb["ctx"].close(), timeout=10)
+        except Exception:
+            pass
+        _skb["ctx"] = _skb["page"] = None
 
 
 async def sk_start_browser() -> None:
@@ -1722,6 +1745,15 @@ async def main() -> None:
     log.info("Agentti käynnistyy, tiedostokansio %s", FILES_ROOT)
     if SK_ENABLED:
         asyncio.create_task(sk_start_browser())
+
+    async def shutdown() -> None:
+        log.info("Lisäosa sammuu, suljetaan selain hallitusti")
+        await sk_close_browser()
+        os._exit(0)
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.ensure_future(shutdown()))
     await wa.connect()
     await wa.idle()
 
