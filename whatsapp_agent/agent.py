@@ -76,9 +76,12 @@ def system_prompt() -> str:
         "(valot, kalenteri, tiedostot) ja se on epäselvä, kysy ensin. Etsi reseptit "
         "search_files- ja read_file-työkaluilla ja kerro, mistä tiedostosta tieto tuli. "
         "Ryhmäviesteissä viestin alussa on lähettäjän nimi, ja kaikki ryhmän jäsenet näkevät vastauksesi. "
-        f"Jos ryhmäviestissä lukee 'ei osoitettu sinulle', päätä itse, kuuluuko se sinulle: vastaa, jos se on "
-        f"sinulle tarkoitettu pyyntö tai kysymys (esim. kodin laitteet, kalenteri, ruoat, reseptit). Jos viesti "
-        f"on ryhmän jäsenten keskinäistä keskustelua, vastaa pelkästään {SILENT} äläkä käytä työkaluja.\n"
+        f"Ryhmässä sinua ei tarvitse mainita. Jos viestin alussa lukee 'ilman mainintaa', vastaa normaalisti "
+        f"aina, kun viesti on kysymys tai pyyntö, johon voit vastata tai jonka voit hoitaa (esim. 'oletko "
+        f"online', valot, kalenteri, ruoat, reseptit, ostoslista), vaikka sinua ei puhuteltaisi nimellä. "
+        f"Vastaa pelkästään {SILENT} (ilman työkaluja) vain, kun viesti on selvästi ryhmän jäsenten "
+        f"keskinäistä keskustelua, esim. puhuttelee toista ihmistä tai on kuulumisten vaihtoa. "
+        f"Epäselvissä tapauksissa vastaa.\n"
         "Käyttäjän WhatsAppissa lähettämät tiedostot tallentuvat kansioon saapuneet; "
         "siirrä ne pyydettäessä oikeaan kansioon move_file-työkalulla.\n"
         "Ruokapäiväkirja: kun käyttäjä kertoo, mitä on syöty (tai vahvistaa listan ruoan "
@@ -740,7 +743,7 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
     if source.IsGroup:
         key = f"ryhma:{source.Chat.User}"
         prefix = (f"[Ryhmäviesti, lähettäjä {ev.Info.Pushname or sender}"
-                  f"{', ei osoitettu sinulle' if silent_ok else ''}] ")
+                  f"{', ilman mainintaa' if silent_ok else ''}] ")
     else:
         key = sender
 
