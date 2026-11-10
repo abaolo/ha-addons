@@ -1,0 +1,4 @@
+anthropic>=0.40
+httpx>=0.27
+neonize==0.10.0
+tzdata
