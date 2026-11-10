@@ -48,6 +48,16 @@ Lähetä omasta puhelimestasi WhatsApp-viesti prepaid-numeroon, esim.
 - Google-kalenteri: lisää Home Assistantiin **Google Calendar** -integraatio. Agentti löytää sen automaattisesti.
 - Ostoslista: lisää **Shopping list** -integraatio.
 
+## Kotisivun ruokalista ja reseptit
+
+Agentti voi lukea kotisivun ruokalistasovelluksen tiedot (tähtiarviot, reseptilinkit, omat ehdotukset,
+aiemmat arvonnat). Täytä lisäosan asetuksiin:
+- `supabase_url`: sama kuin kotisivun `VITE_SUPABASE_URL` (Vercelin ympäristömuuttujat)
+- `supabase_key`: sama kuin `VITE_SUPABASE_KEY`
+
+Reseptin linkistä agentti osaa tallentaa reseptin kansioon `reseptit/`, esim.
+*"tallenna reseptit kaikille ruoille, joilla on linkki kotisivulla"*.
+
 ## Ryhmät
 
 Agentti vastaa ryhmässä vain, kun viesti on osoitettu sille:

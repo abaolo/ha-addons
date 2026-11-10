@@ -29,6 +29,9 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
   käytetään suomea.
 - Älä laajenna `ALLOWED_SERVICE_DOMAINS`-listaa (erityisesti lock, alarm_control_panel tai homeassistant)
   kysymättä käyttäjältä.
+- Älä muuta `system_prompt()`-tekstiä ajon aikana (ei kellonaikoja tms.) äläkä muokkaa keskusteluhistorian
+  keskeltä: uusien mallien ajattelulohkot on sidottu system promptiin ja aiempiin viesteihin, ja muutos
+  aiheuttaa 400-virheen ("Invalid `signature` in `thinking` block"). Muuttuva tieto käyttäjän viestin alkuun.
 - Tiedostotyökalujen pitää käyttää `safe_path()`-funktiota (rajaus `/share/agent`-kansioon).
 - Ostoksia tai maksuja ei koskaan automatisoida loppuun asti. Agentti saa koota ostoskorin, mutta käyttäjä
   maksaa itse.
