@@ -638,10 +638,9 @@ async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, 
             reply = await run_agent(key, text)
         except Exception:
             log.exception("Agentti epäonnistui")
-            if may_stay_silent:
-                return
             reply = "Virhe käsittelyssä. Katso lisäosan loki."
         if may_stay_silent and reply.strip().strip(".").upper() == SILENT:
+            log.info("Ryhmäviesti ei kuulunut agentille, ei vastausta: %s", text[:120])
             if media:
                 safe_path(media).unlink(missing_ok=True)
             return
