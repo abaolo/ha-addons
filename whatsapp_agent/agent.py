@@ -665,6 +665,16 @@ async def sk_state(page, mode: str = "rakenne", start: int = 0) -> str:
         return ("S-kaupat esti automaattisen selaimen bottisuojauksella. Älä yritä kiertää estoa. Kerro "
                 "käyttäjälle, että selainta ei päästetty sisään, ja kokoa ostoskorisuunnitelma viestinä.")
     text = await body.inner_text() if mode == "teksti" else await body.aria_snapshot()
+    for frame in page.frames[1:]:  # upotettujen kehysten sisältö, esim. kuvavarmenteen kenttä
+        if frame.url in ("", "about:blank") or frame.is_detached():
+            continue
+        try:
+            fbody = frame.locator("body")
+            part = await fbody.inner_text(timeout=2000) if mode == "teksti" else await fbody.aria_snapshot(timeout=2000)
+        except Exception:
+            continue
+        if part.strip():
+            text += f"\n\n[Upotettu kehys: {frame.url[:80]}]\n{part}"
     part = text[start:start + SK_MAX_CHARS]
     more = f"\n\n[Sivu jatkuu: alku={start + SK_MAX_CHARS}]" if len(text) > start + SK_MAX_CHARS else ""
     return sk_redact(f"URL: {page.url}\nOtsikko: {await page.title()}\n\n{part}{more}")
@@ -672,13 +682,28 @@ async def sk_state(page, mode: str = "rakenne", start: int = 0) -> str:
 
 def sk_redact(text: str) -> str:
     """Salasana ei saa koskaan päätyä mallille tai keskusteluhistoriaan (rakenne näyttää kenttien arvot)."""
-    return text.replace(SK_PASSWORD, "••••••") if SK_PASSWORD else text
+    # Lyhyttä merkkijonoa ei korvata, ettei sivun tavallinen teksti sotkeudu (oikeat salasanat ovat pidempiä).
+    return text.replace(SK_PASSWORD, "••••••") if len(SK_PASSWORD) >= 6 else text
 
 
-def sk_locator(page, role: str, name: str):
+def sk_locator(frame, role: str, name: str):
     if role:
-        return page.get_by_role(role, name=name) if name else page.get_by_role(role)
-    return page.get_by_text(name)
+        return frame.get_by_role(role, name=name) if name else frame.get_by_role(role)
+    return frame.get_by_text(name)
+
+
+async def sk_find(page, role: str, name: str, n: int = 0, password: bool = False):
+    """Etsii n:nnen osuman pääsivulta ja upotetuista kehyksistä (esim. kuvavarmenne on usein iframessa)."""
+    for frame in page.frames:
+        loc = frame.locator("input[type=password]") if password else sk_locator(frame, role, name)
+        try:
+            count = await loc.count()
+        except Exception:
+            continue  # kehys ehti poistua
+        if n < count:
+            return loc.nth(n)
+        n -= count
+    return None
 
 
 async def sk_after_action(page) -> str:
@@ -708,10 +733,9 @@ async def skaupat_tool(name: str, args: dict) -> str | list:
 
         if name == "skaupat_klikkaa":
             role, label, n = args.get("rooli", ""), args["nimi"], int(args.get("n") or 0)
-            loc = sk_locator(page, role, label)
-            if await loc.count() <= n:
+            target = await sk_find(page, role, label, n)
+            if target is None:
                 return f"Elementtiä ei löytynyt: {role} \"{label}\". Nykyinen sivu:\n\n" + await sk_state(page)
-            target = loc.nth(n)
             full = " ".join(filter(None, [label, await target.get_attribute("aria-label"),
                                           (await target.inner_text())[:200]]))
             if sk_blocked(full, page.url):
@@ -727,15 +751,13 @@ async def skaupat_tool(name: str, args: dict) -> str | list:
             role, label, n = args.get("rooli") or "textbox", args.get("nimi", ""), int(args.get("n") or 0)
             raw = args["teksti"]
             value = raw.replace("{SPOSTI}", SK_EMAIL).replace("{SALASANA}", SK_PASSWORD)
-            if "{SALASANA}" in raw:
-                loc = page.locator("input[type=password]")  # salasanakentällä ei ole roolia
-            else:
-                loc = sk_locator(page, role, label)
-            if await loc.count() <= n:
+            # salasanakentällä ei ole roolia, joten se haetaan tyypin perusteella
+            field = await sk_find(page, role, label, n, password="{SALASANA}" in raw)
+            if field is None:
                 return f"Kenttää ei löytynyt: {role} \"{label}\". Nykyinen sivu:\n\n" + await sk_state(page)
-            await loc.nth(n).fill(value, timeout=10_000)
+            await field.fill(value, timeout=10_000)
             if args.get("enter"):
-                await loc.nth(n).press("Enter")
+                await field.press("Enter")
             return await sk_after_action(page)
 
         if name == "skaupat_kuvakaappaus":
