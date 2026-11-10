@@ -119,6 +119,8 @@ def system_prompt() -> str:
         "voi antaa tapahtumalle värin); muuten käytä Home Assistantin calendar.create_event-palvelua. Lue ennen "
         "tapahtuman luontia asetukset/kalenteri.md (kenen menot mihin kalenteriin ja millä värillä) ja noudata sitä; "
         "kun käyttäjä kertoo uuden pysyvän kalenteritoiveen (esim. 'mun menot sinisellä'), kirjaa se sinne heti. "
+        "Muistutukset (muistutukset-kenttä, minuutteina ennen alkua) tulevat valtuutetun Google-tilin "
+        "ilmoituksiin; muut kalenterin katsojat saavat omat oletusilmoituksensa. "
         "Merkitse tapahtuman nimeen, kenen meno se on, jos se ei käy ilmi. Poista tapahtumia vain käyttäjän "
         "pyynnöstä. Jos Google-yhteyttä ei ole ja tarvitaan väriä, kerro, että yhteys avataan pyytämällä "
         "'yhdistä Google-kalenteri'.\n"
@@ -423,6 +425,12 @@ TOOLS = [
                 "alku": {"type": "string", "description": "2026-11-14T13:00:00 tai koko päivälle 2026-11-14"},
                 "loppu": {"type": "string", "description": "2026-11-14T14:00:00 tai koko päivälle seuraava päivä"},
                 "vari": {"type": "string", "description": "Värin nimi (ks. google_kalenterit), esim. sininen"},
+                "muistutukset": {
+                    "type": "array", "items": {"type": "integer"},
+                    "description": "Muistutukset minuutteina ennen alkua, esim. [30] tai [1440, 60] (päivää ja tuntia ennen). "
+                                   "Tyhjä lista = ei muistutusta. Puuttuu = kalenterin oletus.",
+                },
+                "muistutustapa": {"type": "string", "enum": ["ilmoitus", "sahkoposti"], "description": "Oletus ilmoitus"},
                 "kuvaus": {"type": "string"},
                 "paikka": {"type": "string"},
             },
@@ -443,6 +451,9 @@ TOOLS = [
                 "vari": {"type": "string"},
                 "kuvaus": {"type": "string"},
                 "paikka": {"type": "string"},
+                "muistutukset": {"type": "array", "items": {"type": "integer"},
+                                 "description": "Minuutteina ennen alkua; korvaa aiemmat muistutukset. Tyhjä = ei muistutusta."},
+                "muistutustapa": {"type": "string", "enum": ["ilmoitus", "sahkoposti"]},
             },
             "required": ["kalenteri", "tapahtuma_id"],
         },
@@ -1169,7 +1180,14 @@ def google_event_text(e: dict) -> str:
     start = e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", "")
     end = e.get("end", {}).get("dateTime") or e.get("end", {}).get("date", "")
     color = GOOGLE_COLORS.get(e.get("colorId", ""), ("", "kalenterin oma väri"))[1]
-    return f"- {e.get('summary', '(ei nimeä)')} | {start[:16]} – {end[:16]} | väri: {color} | id {e['id']}"
+    rem = e.get("reminders") or {}
+    if rem.get("useDefault", True):
+        reminders = "oletus"
+    else:
+        reminders = ", ".join(f"{o['minutes']} min ({'sähköposti' if o.get('method') == 'email' else 'ilmoitus'})"
+                              for o in rem.get("overrides", [])) or "ei"
+    return (f"- {e.get('summary', '(ei nimeä)')} | {start[:16]} – {end[:16]} | väri: {color} | "
+            f"muistutus: {reminders} | id {e['id']}")
 
 
 async def google_device_flow(chat) -> str:
@@ -1254,6 +1272,11 @@ async def google_tool(name: str, args: dict) -> str:
                 body["description"] = args["kuvaus"]
             if args.get("paikka"):
                 body["location"] = args["paikka"]
+            if "muistutukset" in args and args["muistutukset"] is not None:
+                method = "email" if args.get("muistutustapa") == "sahkoposti" else "popup"
+                minutes = sorted({max(0, min(int(m), 40320)) for m in args["muistutukset"]})[:5]  # Google: enintään 5, 4 vk
+                body["reminders"] = {"useDefault": False,
+                                     "overrides": [{"method": method, "minutes": m} for m in minutes]}
             if name == "google_luo_tapahtuma":
                 e = await gcal("POST", cal_path + "/events", json=body)
                 return "Luotu: " + google_event_text(e)
