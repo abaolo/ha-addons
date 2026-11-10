@@ -52,7 +52,7 @@ MAX_OUTPUT_TOKENS = 16_000  # isot tehtävät (esim. kymmeniä tiedostoja kerral
 SK_STORE = (OPTIONS.get("skaupat_kauppa") or "").strip()  # kauppa, josta tilataan
 SK_ENABLED = bool(OPTIONS.get("skaupat_selain", False))  # selain + S-kaupat-paneeli (run.sh käynnistää näytön)
 
-claude = AsyncAnthropic(api_key=OPTIONS["anthropic_api_key"])
+claude = AsyncAnthropic(api_key=OPTIONS["anthropic_api_key"], max_retries=3)
 http = httpx.AsyncClient(timeout=30)
 history: dict[str, list] = {}  # keskustelut muistissa; tallennetaan HISTORY_DIR-kansioon
 HISTORY_DIR = Path("/data/historia")
@@ -1115,9 +1115,11 @@ def repair_history(msgs: list) -> None:
 
 
 async def ask_claude(msgs: list):
-    def create():
-        return claude.messages.create(model=OPTIONS["model"], max_tokens=MAX_OUTPUT_TOKENS,
-                                      system=system_prompt(), tools=TOOLS, messages=msgs)
+    async def create():
+        # Suoratoisto: pitkä vastaus tulee pätkinä, jolloin yhteys ei katkea odotukseen (APITimeoutError).
+        async with claude.messages.stream(model=OPTIONS["model"], max_tokens=MAX_OUTPUT_TOKENS,
+                                          system=system_prompt(), tools=TOOLS, messages=msgs) as stream:
+            return await stream.get_final_message()
     try:
         return await create()
     except BadRequestError as e:
