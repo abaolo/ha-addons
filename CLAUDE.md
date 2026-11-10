@@ -42,6 +42,8 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 2. PDF- ja kuvatiedostojen lukeminen (document/image block), esim. resepti kuvasta → `reseptit/*.md`.
 3. Keskusteluhistorian tallennus `/data`-kansioon.
 4. Ajastetut viestit (iltaisin "mitä söitte tänään?", ruokalistaehdotus kahden viikon välein).
-5. S-kaupat: selaintyökalut `skaupat_*` tehty (0.3.0), testaus oikealla sivulla kesken. Tilaus, maksu ja
-   toimitusaika estetty koodissa (`SK_BLOCKED`), salasana peitetään (`sk_redact`).
+5. S-kaupat: rajapintaversio (0.4.0, `api.s-kaupat.fi`, kirjautumisavain `skaupat_refresh_token`). Verkkosivun
+   selainautomaatio hylättiin (bottisuojaus, CAPTCHA); älä yritä kiertää niitä. Ostoskori on selaimessa, joten
+   agentti kirjoittaa vain ostoslistoja. Rajapinta estää ulkomaiset palvelinosoitteet (CloudFront 403): oikean
+   rajapinnan testaus vain kotiverkosta. Kirjautuneet toiminnot testaamatta oikeaa rajapintaa vasten.
 6. Hälytysten välitys WhatsAppiin (vuotovahti ym.).

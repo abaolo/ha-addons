@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim
 
 # libmagic1: neonizen python-magic-riippuvuus
 RUN apt-get update \
@@ -8,10 +8,6 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-# Chromium S-kauppojen selaintyökaluille
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN python -m playwright install --with-deps chromium \
-    && rm -rf /var/lib/apt/lists/*
 COPY agent.py .
 
 CMD ["python", "-u", "agent.py"]
