@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="fi">
+<head><meta charset="utf-8"><title>S-kaupat</title></head>
+<body>
+<p>Avataan S-kaupat-selainta…</p>
+<script>
+  // Home Assistantin paneeli (ingress) on polun /api/hassio_ingress/<tunnus>/ alla, joten noVNC:n
+  // websocket-polku annetaan suhteessa tähän sivuun.
+  const base = location.pathname.replace(/[^/]*$/, "");
+  const path = (base + "websockify").replace(/^\//, "");
+  location.replace(base + "vnc.html?autoconnect=1&reconnect=1&resize=scale&path=" + encodeURIComponent(path));
+</script>
+</body>
+</html>

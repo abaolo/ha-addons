@@ -79,17 +79,30 @@ Jokainen ryhmäviesti on Claude API -kutsu, joten vilkkaassa ryhmässä kulut ka
 
 ## S-kaupat
 
-S-kaupat estää automaattisen käytön (verkkosivulla bottisuojaus ja CAPTCHA, rajapinnassa esto), joten agentti
-ei ole yhteydessä S-kauppoihin. Se auttaa viesteillä ja kuvakaappauksilla:
+S-kauppojen rajapinta vastaa vain kaupan omalle sivulle, joten lisäosassa on oma selain (Chromium
+virtuaalinäytöllä). Kirjaudut siihen itse Home Assistantin sivupalkin **S-kaupat**-paneelissa, ja agentti tekee
+kyselyt sen s-kaupat.fi-välilehdeltä samassa kirjautumisessa. Toimintamalli ja kyselyt:
+[s-kaupat-mcp](https://github.com/Vkuparin/s-kaupat-mcp) (Apache-2.0). Selain ei naamioi itseään, kutsujen
+väli on vähintään 0,5 s, eikä agentti koskaan kirjaudu, tilaa tai maksa. S-kaupat ei toivo automaattista
+käyttöä: käyttö on omalla vastuulla ja voi rikkoa käyttöehtoja.
 
-- **Ostoslistat ruokalistaan:** lähetä kuvakaappaukset S-kaupat-sovelluksen ostoslistoista (Minä → Ostoslistat).
-  Agentti tallentaa ne (`ostokset/skaupat-listat.md`) ja lisää puuttuvat ruoat ruokalistaan.
-- **Juoksevat ostokset:** lähetä kuvakaappauksia aiemmista tilauksista tai kuitteja. Agentti laskee kulutuksen
-  tiedostoon `ostokset/kulutus.md`.
-- **Viikon ostokset:** *"Tee S-kaupan ostokset ensi viikolle"*. Agentti kertoo, mitkä ostoslistat lisätään koriin
-  ja mitkä juoksevat tuotteet määrineen. Lisäät ne sovelluksessa ja tilaat itse.
+**Käyttöönotto:**
+1. Asetukset: `skaupat_selain: true` ja `skaupat_kauppa` (esim. *Prisma Liisanlehto*). Tallenna.
+2. Avaa sivupalkista **S-kaupat**. Näet selaimen, jossa on auki s-kaupat.fi. Kirjaudu sisään tavalliseen
+   tapaan (kuvavarmenne ja sähköpostikoodi kuten aina). Älä kirjaudu ulos.
+3. Kokeile WhatsAppissa: *"Mitä S-kaupan ostoslistoja meillä on?"*
 
-Asetus `skaupat_kauppa` kertoo agentille, mistä kaupasta tilaatte.
+Kun kirjautuminen vanhenee, agentti pyytää kirjautumaan paneelissa uudelleen. Selain vie muistia noin
+300–500 Mt ja on päällä aina, kun `skaupat_selain` on päällä.
+
+**Käyttö:**
+- *"Opettele aiemmista tilauksista, mitä juoksevia meillä menee"*: tilaukset kansioon `ostokset/tilaukset/`,
+  kulutus tiedostoon `ostokset/kulutus.md`.
+- *"Tee S-kaupan ostokset ensi viikon ruokalistasta"*: agentti yhdistää ruokien ostoslistat ja juoksevat
+  tuotteet ja luo vahvistuksesi jälkeen uuden ostoslistan. Avaa se S-kaupat-sovelluksessa, paina
+  **Lisää kaikki ostoskoriin** ja tilaa itse.
+- Ilman selainta (`skaupat_selain: false`) agentti toimii kuvakaappauksilla: lähetä kuvat ostoslistoista tai
+  tilauksista, ja se kokoaa viikon ostokset viestinä.
 
 ## Turvallisuus
 

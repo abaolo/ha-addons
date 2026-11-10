@@ -12,7 +12,7 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 
 ## WhatsApp Agent (`whatsapp_agent/`)
 
-- Docker `python:3.12-slim`, yksi tiedosto `agent.py`.
+- Docker `python:3.12-slim-bookworm`, `agent.py` + `run.sh` (S-kaupat-selaimen virtuaalinäyttö, VNC, noVNC-paneeli).
 - WhatsApp: `neonize==0.10.0` (async `neonize.aioze`), linkitetty laite. QR-koodi → `/share/agent/whatsapp_qr.png`,
   istunto `/data/whatsapp.sqlite3`. Prepaid-numero, koska tapa rikkoo WhatsAppin ehtoja.
 - LLM: Claude API, malli asetuksesta `model`.
@@ -42,7 +42,9 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 2. PDF- ja kuvatiedostojen lukeminen (document/image block), esim. resepti kuvasta → `reseptit/*.md`.
 3. Keskusteluhistorian tallennus `/data`-kansioon.
 4. Ajastetut viestit (iltaisin "mitä söitte tänään?", ruokalistaehdotus kahden viikon välein).
-5. S-kaupat: ei yhteyttä (0.5.0). Verkkosivu (bottisuojaus, CAPTCHA) ja rajapinta `api.s-kaupat.fi` (403 myös
-   kotiverkosta 11/2026) estävät automaation; älä yritä kiertää niitä. Agentti toimii kuvakaappauksilla ja
-   viesteillä: ostoslistat ja tilaukset kuvista, viikon ostokset viestinä, käyttäjä lisää koriin ja tilaa itse.
+5. S-kaupat (0.6.0, käyttäjän päätös ja hyväksyntä): lisäosan oma Chromium virtuaalinäytöllä, käyttäjä kirjautuu
+   itse ingress-paneelissa (noVNC), agentti tekee GraphQL-kyselyt s-kaupat.fi-välilehdeltä (`sk_call`,
+   s-kaupat-mcp:n malli). Rajat: agentti ei kirjaudu, ei ratkaise kuvavarmenteita, ei naamioi selainta, ei tilaa
+   eikä maksa; kirjoittaa vain ostoslistoja ja poistaa vain itse luomansa. Testattu testipalvelimella, ei vielä
+   oikeaa kauppaa vasten.
 6. Hälytysten välitys WhatsAppiin (vuotovahti ym.).
