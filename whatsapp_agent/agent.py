@@ -32,6 +32,7 @@ HA_HEADERS = {"Authorization": f"Bearer {os.environ['SUPERVISOR_TOKEN']}"}
 FILES_ROOT = Path("/share/agent").resolve()
 FILES_ROOT.mkdir(parents=True, exist_ok=True)
 QR_FILE = FILES_ROOT / "whatsapp_qr.png"  # avaa Samballa ja skannaa puhelimella
+TRASH_DIR = "roskakori"  # poistetut tiedostot; käyttäjä tyhjentää itse
 INBOX_DIR = "saapuneet"  # WhatsAppin kautta lähetetyt tiedostot tallentuvat tänne
 ALLOWED_NUMBERS = set(OPTIONS["allowed_numbers"])
 # Ryhmät, joissa agentti vastaa (ryhmän tunnus, esim. 120363012345678901@g.us; @-osa vapaaehtoinen).
@@ -112,7 +113,9 @@ def system_prompt() -> str:
         "käyttäjä sanoo, ettei halua jotain ruokaa ('poista', 'ei enää', 'ei tätä') tai kertoo muun pysyvän "
         "toiveen, kirjaa se heti tiedostoon asetukset/ruokamieltymykset.md (append_file), jotta se säilyy "
         "myös keskustelun jälkeen. Tallenna "
-        "valmis lista kansioon ruokalistat (esim. ruokalistat/2026-vko46-47.md) ja lähetä "
+        "valmis lista kansioon ruokalistat aina muodossa ruokalistat/VVVV-vkoNN-NN.md (esim. "
+        "ruokalistat/2026-vko46-47.md); samalle ajanjaksolle on vain yksi tiedosto, joten muutokset ja korvaavat "
+        "listat kirjoitetaan saman tiedoston päälle, ja ylimääräiset tiedostot poistetaan delete_file-työkalulla. Lähetä "
         "WhatsAppiin tiivis yhteenveto. Tarjoudu lisäämään ainekset ostoslistaan "
         "(ha_call_service: todo.add_item, entity_id todo.shopping_list) yhdisteltyinä ja "
         "kaupan osastoittain ryhmiteltyinä.\n"
@@ -203,6 +206,12 @@ TOOLS = [
             "properties": {"source": {"type": "string"}, "target": {"type": "string"}},
             "required": ["source", "target"],
         },
+    },
+    {
+        "name": "delete_file",
+        "description": "Poistaa tiedoston agentin kansiosta siirtämällä sen roskakoriin (roskakori/), josta sen saa "
+        "tarvittaessa takaisin. Käytä vain, kun käyttäjä pyytää poistamaan tai korvaamaan tiedoston.",
+        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
     },
     {
         "name": "ha_get_states",
@@ -992,6 +1001,18 @@ async def run_tool(name: str, args: dict) -> str | list:
             dst.parent.mkdir(parents=True, exist_ok=True)
             src.rename(dst)
             return f"Siirretty: {dst.relative_to(FILES_ROOT)}"
+
+        if name == "delete_file":
+            src = safe_path(args["path"])
+            if not src.is_file():
+                return f"Tiedostoa ei löydy (kansioita ei poisteta): {args['path']}"
+            rel = src.relative_to(FILES_ROOT)
+            if rel.parts[0] == TRASH_DIR or src == QR_FILE:
+                return "Tätä tiedostoa ei poisteta."
+            dst = safe_path(f"{TRASH_DIR}/{datetime.now(TZ):%Y%m%d-%H%M%S}_{'_'.join(rel.parts)}")
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(dst)
+            return f"Poistettu: {rel} (roskakorissa: {dst.relative_to(FILES_ROOT)})"
 
         if name == "ha_get_states":
             r = await http.get(f"{HA_URL}/states", headers=HA_HEADERS)
