@@ -83,3 +83,17 @@ Ryhmällä on oma keskusteluhistoriansa.
 
 - **"WhatsApp kirjasi laitteen ulos"**: käynnistä lisäosa uudelleen ja linkitä QR-koodilla.
 - **Ei vastausta**: tarkista lokista, hylättiinkö viesti (väärä numero `allowed_numbers`-listassa).
+
+## Reseptit ja kuvat WhatsAppissa
+
+- **Uusi resepti linkistä:** lähetä linkki, esim. *"tallenna resepti: https://www.valio.fi/reseptit/..."*
+- **Uusi resepti tekstinä:** kirjoita ruoan nimi, ainekset ja ohje, ja pyydä tallentamaan.
+- **Resepti kuvasta:** lähetä kuva keittokirjan sivusta tai lapusta kuvatekstillä *"tallenna resepti, Lihakeitto"*.
+  Agentti lukee kuvan ja kirjoittaa reseptin tiedostoon `reseptit/lihakeitto.md`.
+- **Kuva valmiista ruoasta:** lähetä kuva kuvatekstillä *"Kanakeitto"*.
+- **Kuva työvaiheesta:** lähetä kuva kuvatekstillä *"Kanakeitto, vaihe: kasvikset pilkottuna"*.
+  Kuvat tulevat ruoan tiedoston osioon *Työvaiheet kuvina*.
+
+Kuvatekstin voi jättää pois ja kertoa seuraavassa viestissä, mihin ruokaan kuvat kuuluvat. Ryhmässä
+kuvatekstin pitää alkaa agentin nimellä. Kuvat tallentuvat kansioon `reseptit/kuvat/`.
+
