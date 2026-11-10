@@ -79,35 +79,17 @@ Jokainen ryhmäviesti on Claude API -kutsu, joten vilkkaassa ryhmässä kulut ka
 
 ## S-kaupat
 
-Agentti käyttää S-kauppojen rajapintaa (`api.s-kaupat.fi`, ei verkkosivua eikä selainta). Se hakee tuotteita
-ja hintoja, lukee ostoslistat ja aiemmat tilaukset ja kokoaa viikon ostokset **uudeksi ostoslistaksi**.
-Ostoskori on S-kaupoissa vain selaimen muistissa, joten koria agentti ei täytä: avaat listan S-kaupat-
-sovelluksessa, painat **Lisää kaikki ostoskoriin** ja tilaat itse. Agentti ei koskaan tilaa eikä maksa.
-Rajapinta on epävirallinen (kyselyt: [s-kaupat-mcp](https://github.com/Vkuparin/s-kaupat-mcp), Apache-2.0),
-ja S-ryhmä voi muuttaa sitä. Tarkista S-kauppojen käyttöehdot.
+S-kaupat estää automaattisen käytön (verkkosivulla bottisuojaus ja CAPTCHA, rajapinnassa esto), joten agentti
+ei ole yhteydessä S-kauppoihin. Se auttaa viesteillä ja kuvakaappauksilla:
 
-**Asetukset:** `skaupat_kauppa` (esim. *Prisma Liisanlehto* tai kaupan numerotunnus) ja
-`skaupat_refresh_token` (kirjautumisavain, alla). Tuotehaku toimii ilman kirjautumista.
+- **Ostoslistat ruokalistaan:** lähetä kuvakaappaukset S-kaupat-sovelluksen ostoslistoista (Minä → Ostoslistat).
+  Agentti tallentaa ne (`ostokset/skaupat-listat.md`) ja lisää puuttuvat ruoat ruokalistaan.
+- **Juoksevat ostokset:** lähetä kuvakaappauksia aiemmista tilauksista tai kuitteja. Agentti laskee kulutuksen
+  tiedostoon `ostokset/kulutus.md`.
+- **Viikon ostokset:** *"Tee S-kaupan ostokset ensi viikolle"*. Agentti kertoo, mitkä ostoslistat lisätään koriin
+  ja mitkä juoksevat tuotteet määrineen. Lisäät ne sovelluksessa ja tilaat itse.
 
-**Kirjautumisavain (kerran, tietokoneella Chrome tai Edge):**
-1. Avaa www.s-kaupat.fi ja kirjaudu sisään tavalliseen tapaan.
-2. Paina **F12** ja valitse **Console** (Konsoli). Jos Chrome pyytää, kirjoita ensin `allow pasting` ja Enter.
-3. Liitä tämä rivi ja paina Enter. Se etsii kirjautumisavaimen sivun tallennuksista ja kopioi sen leikepöydälle:
-   ```js
-   (()=>{const f=o=>{if(typeof o==='string'){try{return f(JSON.parse(o))}catch{return null}}if(o&&typeof o==='object'){if(typeof o.refreshToken==='string'&&o.refreshToken)return o.refreshToken;for(const v of Object.values(o)){const r=f(v);if(r)return r}}return null};const t=Object.values(localStorage).map(f).find(Boolean);if(t)copy(t);return t?'Kopioitu leikepöydälle':'Ei löytynyt: oletko kirjautunut?'})()
-   ```
-4. Liitä avain Home Assistantissa: **Apps → WhatsApp Agent → Asetukset → skaupat_refresh_token** ja tallenna.
-5. Sulje S-kaupat-välilehti, mutta **älä kirjaudu ulos**: uloskirjautuminen voi mitätöidä avaimen.
-
-Avain on salasanan veroinen: älä lähetä sitä kenellekään. Agentti uusii pääsyavaimen itse ja tallentaa sen
-`/data`-kansioon. Jos agentti kertoo kirjautumisen vanhentuneen, toista ohje.
-
-**Käyttö:**
-- *"Opettele aiemmista tilauksista, mitä juoksevia meillä menee"*: tilaukset kansioon `ostokset/tilaukset/`,
-  kulutus tiedostoon `ostokset/kulutus.md` (kertoja, tyypillinen määrä, ostoväli, viimeksi ostettu).
-- *"Tee S-kaupan ostokset ensi viikon ruokalistasta"*: agentti yhdistää ruokien ostoslistat, ehdottaa
-  juoksevia tuotteita ja luo vahvistuksesi jälkeen listan, esim. *Viikon ostokset vko 47*.
-- *"Paljonko laktoositon maito maksaa?"*: tuotehaku valitusta kaupasta.
+Asetus `skaupat_kauppa` kertoo agentille, mistä kaupasta tilaatte.
 
 ## Turvallisuus
 
