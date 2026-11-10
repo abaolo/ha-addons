@@ -72,6 +72,11 @@ Ryhmän tunnuksen saat näin: lisää agentti ryhmään, kirjoita ryhmään *"Ko
 *"Ryhmä 1203…@g.us ei ole allowed_groups-listassa"*. Kopioi tunnus asetuksiin ja tallenna (lisäosa käynnistyy uudelleen).
 Ryhmällä on oma keskusteluhistoriansa.
 
+**Ilman mainintaa (`group_reply_all: true`):** agentti lukee ryhmän kaikki tekstiviestit ja kuvatekstit ja
+päättää itse, kuuluuko viesti sille. Pyyntöihin (valot, kalenteri, ruoat) se vastaa, keskinäiseen
+keskusteluun ei. Kuvat ilman kuvatekstiä ohitetaan, ja kuvat, joihin agentti ei reagoi, poistetaan.
+Jokainen ryhmäviesti on Claude API -kutsu, joten vilkkaassa ryhmässä kulut kasvavat.
+
 ## Turvallisuus
 
 - Agentti vastaa vain `allowed_numbers`-listan numeroihin, ja ryhmissä vain `allowed_groups`-listan ryhmissä.

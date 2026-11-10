@@ -36,6 +36,9 @@ ALLOWED_NUMBERS = set(OPTIONS["allowed_numbers"])
 # Ryhmät, joissa agentti vastaa (ryhmän tunnus, esim. 120363012345678901@g.us; @-osa vapaaehtoinen).
 ALLOWED_GROUPS = {g.strip().split("@")[0] for g in OPTIONS.get("allowed_groups", []) if g.strip()}
 BOT_NAME = (OPTIONS.get("name") or "Kotiapuri").strip()
+# True: agentti lukee ryhmän kaikki viestit ja päättää itse, vastaako (muuten vain maininnat)
+GROUP_REPLY_ALL = bool(OPTIONS.get("group_reply_all", False))
+SILENT = "HILJAA"  # mallin vastaus, kun ryhmäviesti ei kuulu agentille
 RECIPES_DIR = "reseptit"
 # Home Assistant -palvelut, joita agentti saa kutsua. Laajenna harkiten.
 ALLOWED_SERVICE_DOMAINS = {"light", "switch", "scene", "script", "input_boolean", "climate", "calendar", "todo"}
@@ -72,7 +75,10 @@ def system_prompt() -> str:
         "Säännöt: hae anturiarvot aina työkaluilla, älä arvaa. Jos pyyntö muuttaisi jotain "
         "(valot, kalenteri, tiedostot) ja se on epäselvä, kysy ensin. Etsi reseptit "
         "search_files- ja read_file-työkaluilla ja kerro, mistä tiedostosta tieto tuli. "
-        "Ryhmäviesteissä viestin alussa on lähettäjän nimi, ja kaikki ryhmän jäsenet näkevät vastauksesi.\n"
+        "Ryhmäviesteissä viestin alussa on lähettäjän nimi, ja kaikki ryhmän jäsenet näkevät vastauksesi. "
+        f"Jos ryhmäviestissä lukee 'ei osoitettu sinulle', päätä itse, kuuluuko se sinulle: vastaa, jos se on "
+        f"sinulle tarkoitettu pyyntö tai kysymys (esim. kodin laitteet, kalenteri, ruoat, reseptit). Jos viesti "
+        f"on ryhmän jäsenten keskinäistä keskustelua, vastaa pelkästään {SILENT} äläkä käytä työkaluja.\n"
         "Käyttäjän WhatsAppissa lähettämät tiedostot tallentuvat kansioon saapuneet; "
         "siirrä ne pyydettäessä oikeaan kansioon move_file-työkalulla.\n"
         "Ruokapäiväkirja: kun käyttäjä kertoo, mitä on syöty (tai vahvistaa listan ruoan "
@@ -622,14 +628,23 @@ async def send_whatsapp(chat, text: str) -> None:
         await wa.send_message(chat, text[i:i + 4000])
 
 
-async def handle_text(chat, key: str, text: str) -> None:
-    """key = keskustelun tunniste: lähettäjän numero tai ryhmän tunnus."""
+async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, media: str = "") -> None:
+    """key = keskustelun tunniste: lähettäjän numero tai ryhmän tunnus.
+
+    may_stay_silent: ryhmäviesti, jota ei osoitettu agentille; mallin vastaus HILJAA jätetään lähettämättä
+    (ja mukana tullut tiedosto poistetaan)."""
     async with locks.setdefault(key, asyncio.Lock()):
         try:
             reply = await run_agent(key, text)
         except Exception:
             log.exception("Agentti epäonnistui")
+            if may_stay_silent:
+                return
             reply = "Virhe käsittelyssä. Katso lisäosan loki."
+        if may_stay_silent and reply.strip().strip(".").upper() == SILENT:
+            if media:
+                safe_path(media).unlink(missing_ok=True)
+            return
         await send_whatsapp(chat, reply)
 
 
@@ -703,15 +718,20 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
     text = msg.conversation or msg.extendedTextMessage.text
 
     prefix = ""
+    silent_ok = False  # ryhmäviesti, jota ei osoitettu agentille: malli saa jättää vastaamatta
     if source.IsGroup:
         caption = next((getattr(msg, f).caption for f in MEDIA_FIELDS if msg.HasField(f) and f != "audioMessage"), "")
-        if not addressed_to_me(msg, text or caption):
-            return  # ryhmän muut keskustelut eivät kuulu agentille
+        addressed = addressed_to_me(msg, text or caption)
         group = source.Chat.User
         if group not in ALLOWED_GROUPS:
-            log.warning("Ryhmä %s@g.us ei ole allowed_groups-listassa. Lisää se lisäosan asetuksiin, "
-                        "jos agentin pitää vastata siellä.", group)
+            if addressed:
+                log.warning("Ryhmä %s@g.us ei ole allowed_groups-listassa. Lisää se lisäosan asetuksiin, "
+                            "jos agentin pitää vastata siellä.", group)
             return
+        if not addressed:
+            if not GROUP_REPLY_ALL or not (text or caption):
+                return  # ryhmän muut keskustelut (ja kuvat ilman kuvatekstiä) eivät kuulu agentille
+            silent_ok = True
 
     sender = sender_number(source)
     if sender not in ALLOWED_NUMBERS:
@@ -720,12 +740,13 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
 
     if source.IsGroup:
         key = f"ryhma:{source.Chat.User}"
-        prefix = f"[Ryhmäviesti, lähettäjä {ev.Info.Pushname or sender}] "
+        prefix = (f"[Ryhmäviesti, lähettäjä {ev.Info.Pushname or sender}"
+                  f"{', ei osoitettu sinulle' if silent_ok else ''}] ")
     else:
         key = sender
 
     if text:
-        asyncio.create_task(handle_text(source.Chat, key, prefix + with_pending(key, text)))
+        asyncio.create_task(handle_text(source.Chat, key, prefix + with_pending(key, text), silent_ok))
         return
 
     for field in MEDIA_FIELDS:
@@ -740,7 +761,8 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
             if caption:  # kuvateksti toimii ohjeena, esim. "siirrä reseptit-kansioon"
                 asyncio.create_task(
                     handle_text(source.Chat, key, prefix + with_pending(
-                        key, f"[Lähetin tiedoston, joka tallennettiin polkuun {path}] {caption}"))
+                        key, f"[Lähetin tiedoston, joka tallennettiin polkuun {path}] {caption}"),
+                        silent_ok, path)
                 )
             else:
                 pending_files.setdefault(key, []).append(path)
