@@ -14,6 +14,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN python -m playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 COPY novnc-index.html /usr/share/novnc/index.html
+COPY paneeli-pois ./paneeli-pois
 COPY run.sh agent.py ./
 RUN chmod +x run.sh
 
