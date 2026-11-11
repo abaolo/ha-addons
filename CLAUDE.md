@@ -23,7 +23,8 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 - Tiedostot: `/share/agent` (reseptit/, asetukset/, ruokalistat/, saapuneet/, ostokset/).
 - Keskusteluhistoria: `/data/historia/` (säilyy uudelleenkäynnistyksissä ja päivityksissä). Lyhennys koon mukaan
   (`MAX_HISTORY_CHARS`): ensin vanhojen vuorojen työvaiheet tiivistetään, vasta sitten vanhimmat vuorot pois.
-  Prompt caching (`cache_control` ylätasolla) pitää pitkän historian kulut kurissa.
+  Prompt caching (`cache_control` ylätasolla, ttl 1h) pitää historian kulut kurissa. Mainitsemattomat ryhmäviestit
+  ohittavat ensin halvan vahdin (`gate_says_for_agent`, Haiku, ei historiaa); vasta sitten päämalli.
 
 ## Säännöt
 

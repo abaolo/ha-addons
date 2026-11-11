@@ -43,6 +43,8 @@ ALLOWED_GROUPS = {g.strip().split("@")[0] for g in OPTIONS.get("allowed_groups",
 BOT_NAME = (OPTIONS.get("name") or "Kotiapuri").strip()
 # True: agentti lukee ryhmän kaikki viestit ja päättää itse, vastaako (muuten vain maininnat)
 GROUP_REPLY_ALL = bool(OPTIONS.get("group_reply_all", False))
+# Halpa vahti: päättää, kuuluuko mainitsematon ryhmäviesti agentille, ennen kuin pääkalliimpi malli ajetaan.
+GATE_MODEL = (OPTIONS.get("gate_model") or "claude-haiku-5-5").strip()
 SILENT = "HILJAA"  # mallin vastaus, kun ryhmäviesti ei kuulu agentille
 # Ääniviestit tekstiksi: Groqin ilmaistaso (Whisper large-v3) tai OpenAI. Avain asetuksista.
 STT_KEY = (OPTIONS.get("stt_api_key") or "").strip()
@@ -59,8 +61,8 @@ RECIPES_DIR = "reseptit"
 ALLOWED_SERVICE_DOMAINS = {"light", "switch", "scene", "script", "input_boolean", "climate", "calendar", "todo"}
 TZ = ZoneInfo("Europe/Helsinki")
 # Historia lyhennetään koon mukaan (merkkeinä), ei viestimäärän: yksi iso tehtävä voi olla kymmeniä työvaiheita.
-MAX_HISTORY_CHARS = 400_000  # noin 100 000 tokenia; ylittyessä tiivistetään vanhat työvaiheet
-HISTORY_TARGET_CHARS = 250_000
+MAX_HISTORY_CHARS = 150_000  # noin 40 000 tokenia; ylittyessä tiivistetään vanhat työvaiheet
+HISTORY_TARGET_CHARS = 90_000
 RECENT_TURNS = 6  # näin monen viimeisimmän käyttäjän viestin työvaiheet säilyvät tiivistämättä
 MAX_TOOL_ROUNDS = 25
 MAX_OUTPUT_TOKENS = 16_000  # isot tehtävät (esim. kymmeniä tiedostoja kerralla) tarvitsevat tilaa
@@ -1524,10 +1526,11 @@ def repair_history(msgs: list) -> None:
 async def ask_claude(msgs: list):
     async def create():
         # Suoratoisto: pitkä vastaus tulee pätkinä, jolloin yhteys ei katkea odotukseen (APITimeoutError).
-        # cache_control: aiempi historia luetaan välimuistista (noin kymmenesosan hinnalla).
+        # cache_control: aiempi historia luetaan välimuistista (noin 1/20 hinnalla). Tunnin säilytys, koska
+        # kotikäytössä viestien väli on usein yli 5 min (5 min välimuisti ehtisi vanhentua).
         async with claude.messages.stream(model=OPTIONS["model"], max_tokens=MAX_OUTPUT_TOKENS,
                                           system=system_prompt(), tools=TOOLS, messages=msgs,
-                                          cache_control={"type": "ephemeral"}) as stream:
+                                          cache_control={"type": "ephemeral", "ttl": "1h"}) as stream:
             return await stream.get_final_message()
     try:
         return await create()
@@ -1607,6 +1610,27 @@ async def transcribe(audio: bytes) -> str:
     return (r.json().get("text") or "").strip()
 
 
+async def gate_says_for_agent(key: str, text: str) -> bool:
+    """Kysyy halvalta mallilta (ilman historiaa), onko mainitsematon ryhmäviesti agentille. Epäselvässä tai
+    virhetilanteessa vastaus on kyllä, jolloin pääkalliimpi malli päättää itse."""
+    last_reply = next((b.get("text", "") for m in reversed(load_history(key)) if m["role"] == "assistant"
+                       and isinstance(m["content"], list) for b in m["content"]
+                       if isinstance(b, dict) and b.get("type") == "text"), "")[:400]
+    prompt = (f"Perheen WhatsApp-ryhmässä on kotiavustaja nimeltä {BOT_NAME}. Se hoitaa kodin laitteita, "
+              "kalenteria, ruokalistoja, reseptejä, ostoksia ja vastaa kysymyksiin. "
+              f"Avustajan edellinen viesti ryhmässä: \"{last_reply or '-'}\"\n\nUusi viesti: \"{text[-1500:]}\"\n\n"
+              "Onko uusi viesti pyyntö tai kysymys avustajalle (myös jatkoa sen edelliseen viestiin), vai ryhmän "
+              "jäsenten keskinäistä keskustelua? Vastaa yhdellä sanalla: AVUSTAJA tai KESKUSTELU.")
+    try:
+        resp = await claude.messages.create(model=GATE_MODEL, max_tokens=10, thinking={"type": "disabled"},
+                                            messages=[{"role": "user", "content": prompt}])
+        answer = "".join(b.text for b in resp.content if b.type == "text").strip().upper()
+    except Exception as e:
+        log.warning("Ryhmävahti epäonnistui, annetaan päämallin päättää: %s", str(e)[:200])
+        return True
+    return not answer.startswith("KESKUSTELU")
+
+
 async def run_with_typing(chat, key: str, text: str, quiet: bool) -> str:
     """Ajaa agentin. Näyttää 'kirjoittaa…' työn ajan ja lähettää välitiedotteet (ei hiljaisissa ryhmäviesteissä
     ennen kuin agentti on päättänyt toimia)."""
@@ -1645,6 +1669,11 @@ async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, 
     (ja mukana tullut tiedosto poistetaan)."""
     async with locks.setdefault(key, asyncio.Lock()):
         current_chat.set(chat)
+        if may_stay_silent and not await gate_says_for_agent(key, text):
+            log.info("Ryhmävahti: viesti ei kuulu agentille, ei vastausta")
+            if media:
+                safe_path(media).unlink(missing_ok=True)
+            return
         try:
             reply = await run_with_typing(chat, key, text, may_stay_silent)
         except Exception:

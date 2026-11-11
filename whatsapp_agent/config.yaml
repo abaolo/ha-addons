@@ -1,5 +1,5 @@
 name: WhatsApp Agent
-version: "0.9.1"
+version: "0.9.2"
 slug: whatsapp_agent
 description: Claude-agentti WhatsAppissa (linkitetty laite) – pääsy Home Assistantiin, kalentereihin ja tiedostoihin
 url: https://github.com/abaolo/ha-addons/tree/main/whatsapp_agent
@@ -23,6 +23,7 @@ options:
   name: Kotiapuri
   allowed_groups: []
   group_reply_all: false
+  gate_model: claude-haiku-5-5
   skaupat_kauppa: ""
   skaupat_selain: false
   stt_palvelu: groq
@@ -38,6 +39,7 @@ schema:
   allowed_groups:
     - str
   group_reply_all: bool
+  gate_model: str?
   skaupat_kauppa: str?
   skaupat_selain: bool
   stt_palvelu: list(groq|openai)

@@ -75,7 +75,9 @@ Ryhmällä on oma keskusteluhistoriansa.
 **Ilman mainintaa (`group_reply_all: true`):** agentti lukee ryhmän kaikki tekstiviestit ja kuvatekstit ja
 päättää itse, kuuluuko viesti sille. Pyyntöihin (valot, kalenteri, ruoat) se vastaa, keskinäiseen
 keskusteluun ei. Kuvat ilman kuvatekstiä ohitetaan, ja kuvat, joihin agentti ei reagoi, poistetaan.
-Jokainen ryhmäviesti on Claude API -kutsu, joten vilkkaassa ryhmässä kulut kasvavat.
+Mainitsemattoman viestin lukee ensin halpa malli (`gate_model`, oletus Claude Haiku 5.5) ilman
+keskusteluhistoriaa; vain agentille tarkoitetut viestit menevät päämallille. Keskinäiset viestit maksavat
+sentin murto-osia.
 
 ## S-kaupat
 
