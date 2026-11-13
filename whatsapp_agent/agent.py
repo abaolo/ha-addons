@@ -1619,8 +1619,11 @@ async def gate_says_for_agent(key: str, text: str) -> bool:
     prompt = (f"Perheen WhatsApp-ryhmässä on kotiavustaja nimeltä {BOT_NAME}. Se hoitaa kodin laitteita, "
               "kalenteria, ruokalistoja, reseptejä, ostoksia ja vastaa kysymyksiin. "
               f"Avustajan edellinen viesti ryhmässä: \"{last_reply or '-'}\"\n\nUusi viesti: \"{text[-1500:]}\"\n\n"
-              "Onko uusi viesti pyyntö tai kysymys avustajalle (myös jatkoa sen edelliseen viestiin), vai ryhmän "
-              "jäsenten keskinäistä keskustelua? Vastaa yhdellä sanalla: AVUSTAJA tai KESKUSTELU.")
+              "Vastaa AVUSTAJA, jos uusi viesti on pyyntö, käsky tai kysymys, jonka avustaja voisi hoitaa tai johon se "
+              "voisi vastata (esim. valot, kalenteri, muistutus, ruoka, resepti, ostokset, sää, tieto), vaikka "
+              "avustajaa ei puhuteltaisi, tai jos se jatkaa avustajan edellistä viestiä. Vastaa KESKUSTELU vain, "
+              "kun viesti on selvästi ihmiseltä ihmiselle (puhuttelee toista ihmistä, kuulumiset, tunteet, "
+              "keskinäinen sopiminen). Epäselvässä tapauksessa vastaa AVUSTAJA. Vastaa yhdellä sanalla.")
     try:
         resp = await claude.messages.create(model=GATE_MODEL, max_tokens=10, thinking={"type": "disabled"},
                                             messages=[{"role": "user", "content": prompt}])
@@ -1628,7 +1631,9 @@ async def gate_says_for_agent(key: str, text: str) -> bool:
     except Exception as e:
         log.warning("Ryhmävahti epäonnistui, annetaan päämallin päättää: %s", str(e)[:200])
         return True
-    return not answer.startswith("KESKUSTELU")
+    for_agent = not answer.startswith("KESKUSTELU")
+    log.info("Ryhmävahti: %s (%s)", "agentille" if for_agent else "keskustelua", text[-80:].replace("\n", " "))
+    return for_agent
 
 
 async def run_with_typing(chat, key: str, text: str, quiet: bool) -> str:
@@ -1797,6 +1802,19 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
         if silent_ok and heard.lower().lstrip(" ,.!").startswith(BOT_NAME.lower()):
             silent_ok = False  # puhuttiin agentille nimeltä
         text = f"[Ääniviesti] {heard}"
+
+    # Vastaus ääniviestiin (esim. "@Kotiapuri" lainattuun ääniviestiin): kuunnellaan lainattu ääniviesti.
+    ctx = context_info(msg)
+    if (text and not is_voice and not silent_ok and STT_KEY and ctx is not None
+            and ctx.HasField("quotedMessage") and ctx.quotedMessage.HasField("audioMessage")):
+        try:
+            quoted = await transcribe(await wa.download_any(ctx.quotedMessage))
+            log.info("Lainattu ääniviesti tunnistettu (%d merkkiä)", len(quoted))
+            text = f"{text}\n[Ääniviesti, johon käyttäjä vastasi] {quoted or '(ei puhetta)'}"
+            heard = quoted
+        except Exception:
+            log.exception("Lainatun ääniviestin tunnistus epäonnistui")
+            text += "\n[Käyttäjä vastasi ääniviestiin, mutta sen tunnistus epäonnistui]"
 
     if source.IsGroup:
         key = f"ryhma:{source.Chat.User}"
