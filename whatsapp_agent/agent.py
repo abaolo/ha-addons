@@ -24,6 +24,7 @@ from PIL import Image, ImageOps
 import segno
 from anthropic import AsyncAnthropic, BadRequestError
 from neonize.aioze.client import NewAClient
+from neonize.utils import build_jid
 from neonize.utils.enum import ChatPresence, ChatPresenceMedia
 from neonize.aioze.events import ConnectedEv, LoggedOutEv, MessageEv, PairStatusEv
 
@@ -1834,6 +1835,23 @@ def trim_history(msgs: list) -> None:
     log.info("Keskusteluhistoria tiivistettiin (%d viestiä, %d merkkiä)", len(msgs), history_size(msgs))
 
 
+def turn_interrupted(msgs: list) -> bool:
+    """Valmis vuoro päättyy aina agentin vastaukseen ilman työkalukutsuja; muuten työ jäi kesken."""
+    if not msgs:
+        return False
+    last = msgs[-1]
+    if last["role"] == "user":
+        return True
+    return isinstance(last["content"], list) and any(btype(b) == "tool_use" for b in last["content"])
+
+
+def last_user_request(msgs: list) -> str:
+    for m in reversed(msgs):
+        if m["role"] == "user" and isinstance(m["content"], str):
+            return re.sub(r"^\[[^\]]*\]\s*", "", m["content"]).strip()  # aikaleima pois
+    return ""
+
+
 def repair_history(msgs: list) -> None:
     """Varmistaa, että jokaista työkalukutsua seuraa sen tulos. Keskeytynyt kierros (esim. vastaus katkesi
     pituusrajaan) jättäisi muuten historiaan kutsun ilman tulosta, ja API hylkäisi kaikki seuraavat viestit."""
@@ -1887,14 +1905,20 @@ async def ask_claude(msgs: list):
 
 async def run_agent(sender: str, text: str, progress=None) -> str:
     msgs = load_history(sender)
+    interrupted = turn_interrupted(msgs)
     repair_history(msgs)
     turn_no[sender] = turn_no.get(sender, 0) + 1
     current_key.set(sender)
-    msgs.append({"role": "user", "content": f"[{timestamp()}] {text}"})
+    note = ("[Huom: edellinen tehtäväsi keskeytyi kesken (lisäosa käynnistyi uudelleen). Tarkista ensin, mitä "
+            "ehdit jo tehdä (esim. kalenteri, ostoslista, tiedostot), äläkä tee samoja toimia uudelleen.] "
+            if interrupted else "")
+    msgs.append({"role": "user", "content": f"[{timestamp()}] {note}{text}"})
+    save_history(sender)
     for _ in range(MAX_TOOL_ROUNDS):
         resp = await ask_claude(msgs)
         # Tallennetaan JSON-muodossa (ajattelulohkot allekirjoituksineen säilyvät), jotta historia kestää uudelleenkäynnistyksen.
         msgs.append({"role": "assistant", "content": [b.model_dump(mode="json", exclude_none=True) for b in resp.content]})
+        save_history(sender)  # tallennus jokaisen vaiheen jälkeen: uudelleenkäynnistys ei hävitä tehtyä työtä
         if resp.stop_reason == "pause_turn":
             continue  # palvelimen verkkohaku jäi kesken; lähetetään uudelleen, niin se jatkuu
         calls = [b for b in resp.content if b.type == "tool_use"]
@@ -1916,6 +1940,7 @@ async def run_agent(sender: str, text: str, progress=None) -> str:
             out = await run_tool(block.name, block.input)
             results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
         msgs.append({"role": "user", "content": results})
+        save_history(sender)
     else:
         msgs.append({"role": "assistant", "content": "Tehtävä keskeytyi liian monen vaiheen jälkeen."})
         trim_history(msgs)
@@ -2212,6 +2237,36 @@ async def on_connected(client: NewAClient, ev: ConnectedEv) -> None:
     except Exception:
         log.exception("Oman tunnuksen haku epäonnistui; ryhmämaininnat eivät toimi, nimellä aloitus toimii")
     log.info("Yhdistetty WhatsAppiin – agentti on valmis.")
+    global interrupted_checked
+    if not interrupted_checked:
+        interrupted_checked = True
+        asyncio.create_task(notify_interrupted())
+
+
+interrupted_checked = False
+
+
+async def notify_interrupted() -> None:
+    """Käynnistyksen jälkeen: kerrotaan keskusteluihin, joissa tehtävä jäi kesken."""
+    for f in sorted(HISTORY_DIR.glob("*.json")) if HISTORY_DIR.exists() else []:
+        key = next((k for k in history if history_file(k) == f), None)
+        if key is None:  # avain tiedostonimestä: ryhma_<id> tai puhelinnumero
+            key = f"ryhma:{f.stem[6:]}" if f.stem.startswith("ryhma_") else f.stem
+        msgs = load_history(key)
+        if not turn_interrupted(msgs):
+            continue
+        request = last_user_request(msgs)[:120]
+        repair_history(msgs)
+        msgs.append({"role": "assistant", "content": [{"type": "text", "text":
+                     "Tehtävä keskeytyi, koska lisäosa käynnistyi uudelleen. Kerroin siitä käyttäjälle."}]})
+        save_history(key)
+        chat = build_jid(key[6:], "g.us") if key.startswith("ryhma:") else build_jid(key)
+        try:
+            await send_whatsapp(chat, f"⚠️ Käynnistyin uudelleen kesken tehtävän: _{request}_\n"
+                                      "Osa siitä on voinut jo tapahtua. Kirjoita *jatka*, niin tarkistan tilanteen ja jatkan.")
+            log.info("Ilmoitettu keskeytyneestä tehtävästä (%s)", f.name)
+        except Exception:
+            log.exception("Keskeytysilmoitus epäonnistui")
 
 
 @wa.event(LoggedOutEv)
