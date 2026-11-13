@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import signal
+import sys
 from datetime import datetime
 from io import BytesIO
 from urllib.parse import quote
@@ -2231,8 +2232,33 @@ async def main() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, lambda: asyncio.ensure_future(shutdown()))
-    await wa.connect()
-    await wa.idle()
+    await wait_for_network()
+    try:
+        await wa.connect()
+        await wa.idle()
+    except Exception:
+        # Yhteys ei auennut (esim. verkko ei vielä valmis käynnistyksessä): käynnistetään agentti uudelleen
+        # kasvavalla viiveellä sen sijaan, että lisäosa pysähtyisi.
+        n = int(os.environ.get("WA_RESTARTS", "0")) + 1
+        delay = min(5 * 2 ** min(n, 6), 300)
+        log.exception("WhatsApp-yhteys epäonnistui; agentti käynnistyy uudelleen %d s kuluttua (yritys %d)", delay, n)
+        await sk_close_browser()
+        await asyncio.sleep(delay)
+        os.environ["WA_RESTARTS"] = str(n)
+        os.execv(sys.executable, [sys.executable, "-u", os.path.abspath(__file__)])
+
+
+async def wait_for_network(host: str = "web.whatsapp.com") -> None:
+    """Odottaa, että nimipalvelu toimii (Home Assistantin käynnistyessä verkko voi olla hetken poissa)."""
+    delay = 2
+    while True:
+        try:
+            await asyncio.get_running_loop().getaddrinfo(host, 443)
+            return
+        except OSError as e:
+            log.warning("Verkko ei vielä valmis (%s); odotetaan %d s", e, delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60)
 
 
 if __name__ == "__main__":
