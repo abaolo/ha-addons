@@ -113,7 +113,8 @@ S-kaupoissa, asetus `skaupat_selain` päälle). Se täyttää lomakkeen, lähett
 palvelu, aika, hinta) ja tekee varauksen **vasta, kun vastaat kyllä**; tämä tarkistetaan koodissa. Maksupainikkeet
 on estetty. Varauksen jälkeen agentti lisää ajan kalenteriin.
 
-Asetukset: `varaus_nimi`, `varaus_puhelin`, `varaus_sahkoposti`. Jos sivulla on kuvavarmenne tai kirjautuminen,
+Sivujen selaamisen hoitaa edullinen malli (`selain_malli`, oletus Claude Haiku 5.5), joten varaus maksaa
+arviolta muutaman sentin. Asetukset: `varaus_nimi`, `varaus_puhelin`, `varaus_sahkoposti`. Jos sivulla on kuvavarmenne tai kirjautuminen,
 hoidat sen itse sivupalkin **Kotiapuri-selain**-paneelissa, ja agentti jatkaa siitä.
 
 ## Google-kalenteri (värit)

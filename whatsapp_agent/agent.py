@@ -132,13 +132,13 @@ def system_prompt() -> str:
         "Merkitse tapahtuman nimeen, kenen meno se on, jos se ei käy ilmi. Poista tapahtumia vain käyttäjän "
         "pyynnöstä. Jos Google-yhteyttä ei ole ja tarvitaan väriä, kerro, että yhteys avataan pyytämällä "
         "'yhdistä Google-kalenteri'.\n"
-        "Varaukset (esim. parturi): etsi vaihtoehdot verkkohaulla ja käytä varaussivua selain_*-työkaluilla "
-        "(sivu näkyy saavutettavuuspuuna; klikkaa ja kirjoita roolin ja nimen perusteella). Yhteystiedoiksi "
-        "kirjoita {NIMI}, {PUHELIN} ja {SAHKOPOSTI} (työkalu korvaa ne). Kun lomake on valmis juuri ennen "
-        "lopullista vahvistusta, lähetä yhteenveto selain_pyyda_vahvistus-työkalulla (paikka ja osoite, palvelu, "
-        "päivä ja kellonaika, kesto, hinta, peruutusehdot) ja lopeta vuoro odottamaan vastausta. Vasta kun "
-        "käyttäjä vastaa myöntävästi, paina vahvistuspainiketta (vahvistettu=true). Jos hän haluaa muutoksia, "
-        "tee ne ja pyydä vahvistus uudelleen. Et koskaan maksa mitään. Jos sivulla on kuvavarmenne tai "
+        "Varaukset (esim. parturi): etsi vaihtoehdot verkkohaulla ja anna varaussivun käyttö "
+        "selain_tehtava-työkalulle tarkalla ohjeella (osoite, palvelu, päivä ja aikaraja, täytä yhteystiedot, älä "
+        "vahvista). Kun se palauttaa valmiin varauksen tiedot, lähetä yhteenveto selain_pyyda_vahvistus-työkalulla "
+        "(paikka ja osoite, palvelu, päivä ja kellonaika, kesto, hinta, peruutusehdot) ja lopeta vuoro odottamaan "
+        "vastausta. Vasta kun käyttäjä vastaa myöntävästi, kutsu selain_tehtava vahvista=true ('paina lopullinen "
+        "vahvistus ja kerro vahvistuksen tiedot'). Jos hän haluaa muutoksia, anna ne selain_tehtava-ohjeena ja "
+        "pyydä vahvistus uudelleen. Et koskaan maksa mitään. Jos sivulla on kuvavarmenne tai "
         "kirjautuminen, pyydä käyttäjää hoitamaan se Home Assistantin selainpaneelissa ja jatka sen jälkeen. "
         "Onnistuneen varauksen jälkeen lisää se kalenteriin asetukset/kalenteri.md:n sääntöjen mukaan "
         "(väri, nimi, muistutus) ja kerro varauksen tiedot lyhyesti.\n"
@@ -569,6 +569,26 @@ TOOLS = [
 ]
 
 # Anthropicin palvelimella ajettavat verkkotyökalut (haku ja sivun luku). max_uses rajaa kulut per viesti.
+# Selaimen perustyökalut käyttää vain halpa selainmalli (selain_tehtava); päämalli antaa sille tehtävän.
+BROWSER_SUBTOOL_NAMES = {"selain_avaa", "selain_nayta", "selain_klikkaa", "selain_kirjoita", "selain_valitse"}
+BROWSER_SUBTOOLS = [t for t in TOOLS if t.get("name") in BROWSER_SUBTOOL_NAMES]
+TOOLS = [t for t in TOOLS if t.get("name") not in BROWSER_SUBTOOL_NAMES]
+TOOLS.append({
+    "name": "selain_tehtava",
+    "description": "Antaa selaustehtävän edulliselle selainapurille, joka käyttää lisäosan selainta (esim. "
+    "'Avaa https://… ja valitse hiustenleikkuu torstaille klo 12 jälkeen ensimmäinen vapaa aika, täytä yhteystiedot, "
+    "älä vahvista'). Palauttaa lopputuloksen: varauksen yhteenvedon tai syyn, miksi työ jäi kesken. Selain säilyttää "
+    "tilansa tehtävien välillä, joten seuraava tehtävä voi jatkaa samalta sivulta.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "ohje": {"type": "string", "description": "Tarkka tehtävä: mitä valitaan, mitä täytetään, mihin lopetetaan"},
+            "vahvista": {"type": "boolean", "description": "true vain, kun käyttäjä on vastannut myöntävästi "
+                         "selain_pyyda_vahvistus-yhteenvetoon: apuri saa painaa lopullisen vahvistuksen"},
+        },
+        "required": ["ohje"],
+    },
+})
 TOOLS += [
     {"type": "web_search_20260209", "name": "web_search", "max_uses": 5,
      "user_location": {"type": "approximate", "country": "FI", "timezone": "Europe/Helsinki"}},
@@ -1386,7 +1406,16 @@ WEB_PAYMENT = re.compile(r"maksa|maksu|payment|pay\b|checkout|kassalle|lisää k
 WEB_FINAL = re.compile(r"vahvista|confirm|tee varaus|lähetä varaus|viimeistele|varaa nyt|book now|complete|finish", re.I)
 WEB_CHECK = re.compile(r"captcha|en ole robotti|i'm not a robot|security checkpoint|verify you are human|"
                        r"failed to verify your browser", re.I)
-WEB_MAX_CHARS = 10_000
+WEB_MAX_CHARS = 6_000
+# Tiiviissä näkymässä pidetään vain toiminnalliset osat ja rivit, joissa on aika, päivä tai hinta.
+WEB_KEEP = re.compile(r"^\s*- (button|link|radio|checkbox|textbox|searchbox|combobox|option|spinbutton|heading|tab|"
+                      r"menuitem|switch|slider|dialog|alert|group)\b|\d{1,2}[:.]\d{2}|\d{1,2}\.\d{1,2}\.|€|"
+                      r"\b(ma|ti|ke|to|pe|la|su)\b|varattu|vapaa|loppuunvarattu", re.I)
+
+
+def compact_snapshot(text: str) -> str:
+    lines = [ln for ln in text.splitlines() if WEB_KEEP.search(ln)]
+    return "\n".join(ln.replace("  - /url:", "    url:") for ln in lines)
 confirm_asked: dict[str, int] = {}  # keskustelu -> käyttäjän viestin numero, jolloin yhteenveto lähetettiin
 # S-kauppojen sivulla estetään myös tilaus- ja toimitusaikapainikkeet
 SK_BLOCKED = re.compile(r"kassa|tilaa\b|tilaamaan|tilaukseen|maksa|maksu|vahvista tilaus|lähetä tilaus|"
@@ -1428,13 +1457,14 @@ async def web_state(page, mode: str = "rakenne", start: int = 0) -> str:
     except Exception:
         pass
     body = page.locator("body")
-    text = await body.inner_text() if mode == "teksti" else await body.aria_snapshot()
+    text = await body.inner_text() if mode == "teksti" else compact_snapshot(await body.aria_snapshot())
     for frame in page.frames[1:]:  # upotetut kehykset (esim. varauslomake tai kuvavarmenne iframessa)
         if frame.url in ("", "about:blank") or frame.is_detached():
             continue
         try:
             fbody = frame.locator("body")
-            part = await fbody.inner_text(timeout=2000) if mode == "teksti" else await fbody.aria_snapshot(timeout=2000)
+            part = await fbody.inner_text(timeout=2000) if mode == "teksti" else compact_snapshot(
+                await fbody.aria_snapshot(timeout=2000))
         except Exception:
             continue
         if part.strip():
@@ -1543,6 +1573,55 @@ async def web_tool(name: str, args: dict) -> str | list:
     return f"Tuntematon työkalu: {name}"
 
 
+BROWSER_MODEL = (OPTIONS.get("selain_malli") or "claude-haiku-5-5").strip()
+BROWSER_MAX_ROUNDS = 30
+
+
+async def browser_task(instruction: str, confirm: bool) -> str:
+    """Ajaa selaustehtävän edullisella mallilla erillisessä keskustelussa. Välivaiheet eivät mene päähistoriaan."""
+    system = (
+        "Olet selainapuri. Käytät verkkosivua työkaluilla: sivu näkyy tiiviinä saavutettavuuspuuna (rooli \"nimi\"); "
+        "klikkaa ja kirjoita roolin ja nimen perusteella, ja lue koko teksti tila='teksti', jos tarvitset "
+        "lisätietoja (esim. hinnat tai peruutusehdot). Yhteystiedoiksi kirjoita {NIMI}, {PUHELIN} ja {SAHKOPOSTI}. "
+        "Et koskaan maksa mitään. "
+        + ("Käyttäjä on hyväksynyt varauksen: paina lopullinen vahvistus vahvistettu=true ja kerro vahvistuksen tiedot. "
+           if confirm else
+           "Älä paina lopullista vahvistus- tai varauspainiketta: kun kaikki on valittu ja täytetty, lopeta. ")
+        + "Jos sivulla on kuvavarmenne, kirjautuminen tai jäät jumiin, lopeta ja kerro syy. "
+        "Lopuksi vastaa suomeksi tiiviisti: paikka ja osoite, palvelu, päivä ja kellonaika, kesto, hinta, "
+        "peruutusehdot (jos näkyvillä), mikä painike vahvistaa, ja mitä jäi tekemättä."
+    )
+    msgs = [{"role": "user", "content": instruction}]
+    used = {"in": 0, "out": 0, "cache": 0}
+    for _ in range(BROWSER_MAX_ROUNDS):
+        async with claude.messages.stream(model=BROWSER_MODEL, max_tokens=4000, system=system, tools=BROWSER_SUBTOOLS,
+                                          messages=msgs, thinking={"type": "disabled"},
+                                          cache_control={"type": "ephemeral"}) as stream:
+            resp = await stream.get_final_message()
+        u = resp.usage
+        used["in"] += u.input_tokens + (u.cache_creation_input_tokens or 0)
+        used["cache"] += u.cache_read_input_tokens or 0
+        used["out"] += u.output_tokens
+        msgs.append({"role": "assistant", "content": [b.model_dump(mode="json", exclude_none=True) for b in resp.content]})
+        calls = [b for b in resp.content if b.type == "tool_use"]
+        if not calls:
+            break
+        results = []
+        for b in calls:
+            args = dict(b.input)
+            if b.name == "selain_klikkaa" and args.get("vahvistettu") and not confirm:
+                args["vahvistettu"] = False  # apuri ei saa vahvistaa ilman päämallin lupaa
+            log.info("Selainapuri: %s %s", b.name, {k: v for k, v in args.items() if k != "teksti"})
+            out = await web_tool(b.name, args)
+            results.append({"type": "tool_result", "tool_use_id": b.id, "content": out})
+        msgs.append({"role": "user", "content": results})
+    else:
+        resp = None
+    log.info("Selainapuri valmis: %d syöte-, %d välimuisti- ja %d vastaustokenia", used["in"], used["cache"], used["out"])
+    text = "\n".join(b.text for b in resp.content if b.type == "text").strip() if resp else ""
+    return text or "Selainapuri ei saanut tehtävää valmiiksi (liian monta vaihetta). Pyydä käyttäjää jatkamaan paneelissa."
+
+
 async def send_image_to_chat(rel: str, caption: str = "") -> str:
     chat = current_chat.get()
     if chat is None:
@@ -1642,6 +1721,9 @@ async def run_tool(name: str, args: dict) -> str | list:
 
         if name.startswith("google_"):
             return await google_tool(name, args)
+
+        if name == "selain_tehtava":
+            return await browser_task(args["ohje"], bool(args.get("vahvista")))
 
         if name.startswith("selain_"):
             return await web_tool(name, args)
