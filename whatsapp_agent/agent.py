@@ -2129,7 +2129,8 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
     silent_ok = False  # ryhmäviesti, jota ei osoitettu agentille: malli saa jättää vastaamatta
     if source.IsGroup:
         caption = next((getattr(msg, f).caption for f in MEDIA_FIELDS if msg.HasField(f) and f != "audioMessage"), "")
-        addressed = addressed_to_me(msg, text or caption)
+        # Ääniviestit ovat aina agentille (käyttäjän sääntö), joten ne eivät mene ryhmävahdille.
+        addressed = addressed_to_me(msg, text or caption) or is_voice
         group = source.Chat.User
         if group not in ALLOWED_GROUPS:
             if addressed:
