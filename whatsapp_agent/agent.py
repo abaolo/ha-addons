@@ -64,7 +64,7 @@ TZ = ZoneInfo("Europe/Helsinki")
 MAX_HISTORY_CHARS = 150_000  # noin 40 000 tokenia; ylittyessä tiivistetään vanhat työvaiheet
 HISTORY_TARGET_CHARS = 90_000
 RECENT_TURNS = 6  # näin monen viimeisimmän käyttäjän viestin työvaiheet säilyvät tiivistämättä
-MAX_TOOL_ROUNDS = 25
+MAX_TOOL_ROUNDS = 40  # varaussivujen selaaminen vaatii useita vaiheita
 MAX_OUTPUT_TOKENS = 16_000  # isot tehtävät (esim. kymmeniä tiedostoja kerralla) tarvitsevat tilaa
 
 SK_STORE = (OPTIONS.get("skaupat_kauppa") or "").strip()  # kauppa, josta tilataan
@@ -75,6 +75,12 @@ http = httpx.AsyncClient(timeout=30)
 history: dict[str, list] = {}  # keskustelut muistissa; tallennetaan HISTORY_DIR-kansioon
 HISTORY_DIR = Path("/data/historia")
 current_chat: contextvars.ContextVar = contextvars.ContextVar("current_chat", default=None)  # keskustelu, jota käsitellään
+current_key: contextvars.ContextVar = contextvars.ContextVar("current_key", default="")  # historian avain
+turn_no: dict[str, int] = {}  # käyttäjän viestien laskuri keskusteluittain (vahvistusten tarkistukseen)
+# Varauslomakkeiden yhteystiedot asetuksista; agentti kirjoittaa paikkamerkit, työkalu korvaa ne.
+PERSONAL = {"{NIMI}": (OPTIONS.get("varaus_nimi") or "").strip(),
+            "{PUHELIN}": (OPTIONS.get("varaus_puhelin") or "").strip(),
+            "{SAHKOPOSTI}": (OPTIONS.get("varaus_sahkoposti") or "").strip()}
 locks: dict[str, asyncio.Lock] = {}
 my_ids: set[str] = set()  # agentin oma numero ja LID, täytetään yhdistettäessä
 wa = NewAClient("/data/whatsapp.sqlite3")
@@ -126,6 +132,16 @@ def system_prompt() -> str:
         "Merkitse tapahtuman nimeen, kenen meno se on, jos se ei käy ilmi. Poista tapahtumia vain käyttäjän "
         "pyynnöstä. Jos Google-yhteyttä ei ole ja tarvitaan väriä, kerro, että yhteys avataan pyytämällä "
         "'yhdistä Google-kalenteri'.\n"
+        "Varaukset (esim. parturi): etsi vaihtoehdot verkkohaulla ja käytä varaussivua selain_*-työkaluilla "
+        "(sivu näkyy saavutettavuuspuuna; klikkaa ja kirjoita roolin ja nimen perusteella). Yhteystiedoiksi "
+        "kirjoita {NIMI}, {PUHELIN} ja {SAHKOPOSTI} (työkalu korvaa ne). Kun lomake on valmis juuri ennen "
+        "lopullista vahvistusta, lähetä yhteenveto selain_pyyda_vahvistus-työkalulla (paikka ja osoite, palvelu, "
+        "päivä ja kellonaika, kesto, hinta, peruutusehdot) ja lopeta vuoro odottamaan vastausta. Vasta kun "
+        "käyttäjä vastaa myöntävästi, paina vahvistuspainiketta (vahvistettu=true). Jos hän haluaa muutoksia, "
+        "tee ne ja pyydä vahvistus uudelleen. Et koskaan maksa mitään. Jos sivulla on kuvavarmenne tai "
+        "kirjautuminen, pyydä käyttäjää hoitamaan se Home Assistantin selainpaneelissa ja jatka sen jälkeen. "
+        "Onnistuneen varauksen jälkeen lisää se kalenteriin asetukset/kalenteri.md:n sääntöjen mukaan "
+        "(väri, nimi, muistutus) ja kerro varauksen tiedot lyhyesti.\n"
         "Ruokapäiväkirja: kun käyttäjä kertoo, mitä on syöty (tai vahvistaa listan ruoan "
         "toteutuneen), lisää rivi tiedostoon ruokalistat/syodyt.md append_file-työkalulla "
         "muodossa '- PP.KK.VVVV: ruoka (resepti-tiedosto jos tiedossa) – arvio/kommentti'. "
@@ -367,6 +383,74 @@ TOOLS = [
         "description": "Hakee aiempien tilausten tuotteet tiedostoihin ostokset/tilaukset/ ja laskee juoksevien "
         "ostosten kulutuksen tiedostoon ostokset/kulutus.md. Vaatii kirjautumisen (S-kaupat-paneeli).",
         "input_schema": {"type": "object", "properties": {"maara": {"type": "integer", "description": "Tilauksia (oletus 15)"}}},
+    },
+    {
+        "name": "selain_avaa",
+        "description": "Avaa verkkosivun lisäosan selaimessa (esim. parturin varaussivu) ja palauttaa sen rakenteen.",
+        "input_schema": {"type": "object", "properties": {"osoite": {"type": "string"}}, "required": ["osoite"]},
+    },
+    {
+        "name": "selain_nayta",
+        "description": "Näyttää selaimen nykyisen sivun: tila 'rakenne' (painikkeet, linkit, kentät) tai 'teksti'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"tila": {"type": "string", "enum": ["rakenne", "teksti"]}, "alku": {"type": "integer"}},
+        },
+    },
+    {
+        "name": "selain_klikkaa",
+        "description": "Klikkaa elementtiä roolin ja nimen perusteella (osa nimestä riittää). Maksupainikkeet on "
+        "estetty. Lopullinen vahvistus vaatii vahvistettu=true ja että käyttäjä on vastannut "
+        "selain_pyyda_vahvistus-yhteenvetoon.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rooli": {"type": "string", "description": "button, link, radio, checkbox, option, tab... tyhjä = haku tekstillä"},
+                "nimi": {"type": "string"},
+                "n": {"type": "integer", "description": "Monesko osuma (oletus 0)"},
+                "vahvistettu": {"type": "boolean"},
+            },
+            "required": ["nimi"],
+        },
+    },
+    {
+        "name": "selain_kirjoita",
+        "description": "Kirjoittaa kenttään. {NIMI}, {PUHELIN} ja {SAHKOPOSTI} korvataan asetusten yhteystiedoilla.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rooli": {"type": "string", "description": "textbox, searchbox, spinbutton (oletus textbox)"},
+                "nimi": {"type": "string", "description": "Kentän nimi; tyhjä = ensimmäinen kenttä"},
+                "teksti": {"type": "string"},
+                "enter": {"type": "boolean"},
+                "n": {"type": "integer"},
+            },
+            "required": ["teksti"],
+        },
+    },
+    {
+        "name": "selain_valitse",
+        "description": "Valitsee pudotusvalikosta (combobox/select) vaihtoehdon sen tekstin perusteella.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"nimi": {"type": "string"}, "arvo": {"type": "string"}, "n": {"type": "integer"}},
+            "required": ["arvo"],
+        },
+    },
+    {
+        "name": "selain_kuvakaappaus",
+        "description": "Ottaa kuvakaappauksen selaimen sivusta ja näyttää sen sinulle, tai laheta_kayttajalle=true "
+        "lähettää sen käyttäjälle WhatsAppiin.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"laheta_kayttajalle": {"type": "boolean"}, "teksti": {"type": "string"}},
+        },
+    },
+    {
+        "name": "selain_pyyda_vahvistus",
+        "description": "Lähettää käyttäjälle varauksen yhteenvedon vahvistettavaksi. Lopeta tämän jälkeen vuoro ja "
+        "odota vastausta; vahvistuspainiketta voi painaa vasta käyttäjän vastattua.",
+        "input_schema": {"type": "object", "properties": {"yhteenveto": {"type": "string"}}, "required": ["yhteenveto"]},
     },
     {
         "name": "laheta_kuva",
@@ -1295,6 +1379,170 @@ async def google_tool(name: str, args: dict) -> str:
     return f"Tuntematon työkalu: {name}"
 
 
+# --- Yleinen selain (esim. parturivaraukset) ---
+# Sama lisäosan selain kuin S-kaupoissa, omassa välilehdessään. Maksaminen estetään aina, ja lopullinen
+# vahvistus vaatii, että käyttäjä on vastannut agentin lähettämään yhteenvetoon (tarkistus koodissa).
+WEB_PAYMENT = re.compile(r"maksa|maksu|payment|pay\b|checkout|kassalle|lisää kortti|korttitiedot|card details", re.I)
+WEB_FINAL = re.compile(r"vahvista|confirm|tee varaus|lähetä varaus|viimeistele|varaa nyt|book now|complete|finish", re.I)
+WEB_CHECK = re.compile(r"captcha|en ole robotti|i'm not a robot|security checkpoint|verify you are human|"
+                       r"failed to verify your browser", re.I)
+WEB_MAX_CHARS = 10_000
+confirm_asked: dict[str, int] = {}  # keskustelu -> käyttäjän viestin numero, jolloin yhteenveto lähetettiin
+# S-kauppojen sivulla estetään myös tilaus- ja toimitusaikapainikkeet
+SK_BLOCKED = re.compile(r"kassa|tilaa\b|tilaamaan|tilaukseen|maksa|maksu|vahvista tilaus|lähetä tilaus|"
+                        r"toimitusaika|varaa toimitus|checkout|payment", re.I)
+
+
+def sk_locator(frame, role: str, name: str):
+    if role:
+        return frame.get_by_role(role, name=name) if name else frame.get_by_role(role)
+    return frame.get_by_text(name)
+
+
+async def sk_find(page, role: str, name: str, n: int = 0):
+    """Etsii n:nnen osuman pääsivulta ja upotetuista kehyksistä (lomakkeet ja kuvavarmenteet ovat usein iframessa)."""
+    for frame in page.frames:
+        loc = sk_locator(frame, role, name)
+        try:
+            count = await loc.count()
+        except Exception:
+            continue  # kehys ehti poistua
+        if n < count:
+            return loc.nth(n)
+        n -= count
+    return None
+
+
+async def web_page():
+    await sk_browser()  # käynnistää lisäosan selaimen tarvittaessa (asetus skaupat_selain)
+    page = _skb.get("web")
+    if page is None or page.is_closed():
+        page = _skb["web"] = await _skb["ctx"].new_page()
+    await page.bring_to_front()  # paneelissa näkyy tämä välilehti
+    return page
+
+
+async def web_state(page, mode: str = "rakenne", start: int = 0) -> str:
+    try:
+        await page.wait_for_load_state("networkidle", timeout=6000)
+    except Exception:
+        pass
+    body = page.locator("body")
+    text = await body.inner_text() if mode == "teksti" else await body.aria_snapshot()
+    for frame in page.frames[1:]:  # upotetut kehykset (esim. varauslomake tai kuvavarmenne iframessa)
+        if frame.url in ("", "about:blank") or frame.is_detached():
+            continue
+        try:
+            fbody = frame.locator("body")
+            part = await fbody.inner_text(timeout=2000) if mode == "teksti" else await fbody.aria_snapshot(timeout=2000)
+        except Exception:
+            continue
+        if part.strip():
+            text += f"\n\n[Upotettu kehys: {frame.url[:80]}]\n{part}"
+    note = ""
+    if WEB_CHECK.search(text):
+        note = ("\n\n[Sivulla on kuvavarmenne tai tarkistus: älä yritä ratkaista sitä. Pyydä käyttäjää hoitamaan se "
+                "Home Assistantin selainpaneelissa ja jatka, kun hän kertoo valmiiksi.]")
+    part = text[start:start + WEB_MAX_CHARS]
+    more = f"\n\n[Sivu jatkuu: alku={start + WEB_MAX_CHARS}]" if len(text) > start + WEB_MAX_CHARS else ""
+    return f"URL: {page.url}\nOtsikko: {await page.title()}\n\n{part}{more}{note}"
+
+
+async def web_target_text(target, label: str) -> str:
+    parts = [label]
+    for getter in (lambda: target.get_attribute("aria-label"), lambda: target.inner_text(), lambda: target.get_attribute("value")):
+        try:
+            v = await getter()
+        except Exception:
+            v = None
+        if v:
+            parts.append(v[:200])
+    return " ".join(parts)
+
+
+async def web_tool(name: str, args: dict) -> str | list:
+    try:
+        page = await web_page()
+    except SKaupatError as e:
+        if str(e) == "ei_kaytossa":
+            return "Selain ei ole käytössä: laita lisäosan asetus skaupat_selain päälle."
+        raise
+    key = current_key.get()
+    if name == "selain_avaa":
+        url = args["osoite"].strip()
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+        return await web_state(page)
+    if name == "selain_nayta":
+        return await web_state(page, args.get("tila", "rakenne"), int(args.get("alku") or 0))
+    if name == "selain_klikkaa":
+        role, label, n = args.get("rooli", ""), args["nimi"], int(args.get("n") or 0)
+        target = await sk_find(page, role, label, n)
+        if target is None:
+            return f"Elementtiä ei löytynyt: {role} \"{label}\". Nykyinen sivu:\n\n" + await web_state(page)
+        full = await web_target_text(target, label)
+        if WEB_PAYMENT.search(full) or (SK_SITE in page.url and SK_BLOCKED.search(full)):
+            log.warning("Selain: estetty maksu-/tilauspainike %r", full[:120])
+            return "Estetty: maksaminen ja tilaaminen jäävät käyttäjälle."
+        if WEB_FINAL.search(full):
+            asked = confirm_asked.get(key)
+            if not args.get("vahvistettu") or asked is None or turn_no.get(key, 0) <= asked:
+                return ("Tämä on lopullinen vahvistus. Lähetä ensin yhteenveto selain_pyyda_vahvistus-työkalulla ja "
+                        "odota käyttäjän vastausta; paina sitten uudelleen vahvistettu=true.")
+            confirm_asked.pop(key, None)
+            log.info("Selain: käyttäjän vahvistama lopullinen painallus %r", full[:120])
+        await target.scroll_into_view_if_needed(timeout=5000)
+        await target.click(timeout=10_000)
+        await page.wait_for_timeout(1500)
+        return await web_state(page)
+    if name == "selain_kirjoita":
+        raw = args["teksti"]
+        value = raw
+        for ph, real in PERSONAL.items():
+            if ph in value:
+                if not real:
+                    return f"Asetuksissa ei ole tietoa {ph}: pyydä käyttäjää lisäämään se tai kertomaan se."
+                value = value.replace(ph, real)
+        field = await sk_find(page, args.get("rooli") or "textbox", args.get("nimi", ""), int(args.get("n") or 0))
+        if field is None:
+            return f"Kenttää ei löytynyt: \"{args.get('nimi', '')}\". Nykyinen sivu:\n\n" + await web_state(page)
+        await field.fill(value, timeout=10_000)
+        if args.get("enter"):
+            await field.press("Enter")
+        await page.wait_for_timeout(800)
+        return await web_state(page)
+    if name == "selain_valitse":
+        field = await sk_find(page, "combobox", args.get("nimi", ""), int(args.get("n") or 0))
+        if field is None:
+            return f"Valikkoa ei löytynyt: \"{args.get('nimi', '')}\"."
+        try:
+            await field.select_option(label=args["arvo"], timeout=5000)
+        except Exception:
+            await field.select_option(value=args["arvo"], timeout=5000)
+        await page.wait_for_timeout(800)
+        return await web_state(page)
+    if name == "selain_kuvakaappaus":
+        folder = safe_path("selain")
+        folder.mkdir(parents=True, exist_ok=True)
+        for old in sorted(folder.glob("kuva-*.png"))[:-19]:
+            old.unlink()
+        rel = f"selain/kuva-{datetime.now(TZ):%Y%m%d-%H%M%S}.png"
+        await page.screenshot(path=str(safe_path(rel)))
+        if args.get("laheta_kayttajalle"):
+            return await send_image_to_chat(rel, args.get("teksti", ""))
+        return image_block(rel)
+    if name == "selain_pyyda_vahvistus":
+        chat = current_chat.get()
+        if chat is None:
+            return "Ei keskustelua, johon yhteenvedon voisi lähettää."
+        await send_whatsapp(chat, f"📋 *Vahvistatko varauksen?*\n\n{args['yhteenveto'].strip()}\n\n"
+                                  "Vastaa *kyllä*, niin teen varauksen, tai kerro mitä muutetaan.")
+        confirm_asked[key] = turn_no.get(key, 0)
+        return "Yhteenveto lähetetty. Lopeta vuoro nyt ja odota käyttäjän vastausta."
+    return f"Tuntematon työkalu: {name}"
+
+
 async def send_image_to_chat(rel: str, caption: str = "") -> str:
     chat = current_chat.get()
     if chat is None:
@@ -1394,6 +1642,9 @@ async def run_tool(name: str, args: dict) -> str | list:
 
         if name.startswith("google_"):
             return await google_tool(name, args)
+
+        if name.startswith("selain_"):
+            return await web_tool(name, args)
 
         if name == "laheta_kuva":
             return await send_image_to_chat(args["path"], args.get("teksti", ""))
@@ -1554,6 +1805,8 @@ async def ask_claude(msgs: list):
 async def run_agent(sender: str, text: str, progress=None) -> str:
     msgs = load_history(sender)
     repair_history(msgs)
+    turn_no[sender] = turn_no.get(sender, 0) + 1
+    current_key.set(sender)
     msgs.append({"role": "user", "content": f"[{timestamp()}] {text}"})
     for _ in range(MAX_TOOL_ROUNDS):
         resp = await ask_claude(msgs)

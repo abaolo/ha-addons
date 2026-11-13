@@ -1,5 +1,5 @@
 name: WhatsApp Agent
-version: "0.9.3"
+version: "0.10.0"
 slug: whatsapp_agent
 description: Claude-agentti WhatsAppissa (linkitetty laite) – pääsy Home Assistantiin, kalentereihin ja tiedostoihin
 url: https://github.com/abaolo/ha-addons/tree/main/whatsapp_agent
@@ -11,8 +11,8 @@ boot: auto
 homeassistant_api: true
 ingress: true
 ingress_port: 6080
-panel_icon: mdi:cart
-panel_title: S-kaupat
+panel_icon: mdi:web
+panel_title: Kotiapuri-selain
 map:
   - type: share
     read_only: false
@@ -29,6 +29,9 @@ options:
   stt_palvelu: groq
   stt_api_key: ""
   google_client_id: ""
+  varaus_nimi: ""
+  varaus_puhelin: ""
+  varaus_sahkoposti: ""
   google_client_secret: ""
 schema:
   anthropic_api_key: password
@@ -46,3 +49,6 @@ schema:
   stt_api_key: password?
   google_client_id: str?
   google_client_secret: password?
+  varaus_nimi: str?
+  varaus_puhelin: str?
+  varaus_sahkoposti: str?

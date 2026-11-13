@@ -106,6 +106,16 @@ Kun kirjautuminen vanhenee, agentti pyytää kirjautumaan paneelissa uudelleen. 
 - Ilman selainta (`skaupat_selain: false`) agentti toimii kuvakaappauksilla: lähetä kuvat ostoslistoista tai
   tilauksista, ja se kokoaa viikon ostokset viestinä.
 
+## Varaukset (esim. parturi)
+
+Agentti voi etsiä palvelun ja tehdä ajanvarauksen varaussivulla lisäosan omalla selaimella (sama selain kuin
+S-kaupoissa, asetus `skaupat_selain` päälle). Se täyttää lomakkeen, lähettää sinulle yhteenvedon (paikka,
+palvelu, aika, hinta) ja tekee varauksen **vasta, kun vastaat kyllä**; tämä tarkistetaan koodissa. Maksupainikkeet
+on estetty. Varauksen jälkeen agentti lisää ajan kalenteriin.
+
+Asetukset: `varaus_nimi`, `varaus_puhelin`, `varaus_sahkoposti`. Jos sivulla on kuvavarmenne tai kirjautuminen,
+hoidat sen itse sivupalkin **Kotiapuri-selain**-paneelissa, ja agentti jatkaa siitä.
+
 ## Google-kalenteri (värit)
 
 Home Assistantin kalenteripalvelu ei osaa tapahtumien värejä, joten agentti voi käyttää Google-kalenteria
