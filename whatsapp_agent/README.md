@@ -158,7 +158,7 @@ Agentti lukee myös Home Assistantin historiaa (`ha_historia`) ja pitkäaikaisia
 Kysy esim. *"Paljonko sähköä kului tässä kuussa verrattuna viime kuuhun?"* tai *"päivitä sähkönkulutus"*.
 
 **Lämpötilat:** ulkolämpötilat tulevat Ilmatieteen laitoksen avoimesta datasta (ei avainta; asetus `saa_paikka`,
-oletus Turku): mitatut päivän keski-, minimi- ja maksimilämpötilat tilastoon `whatsapp_agent:ulkolampotila`
+oletus Turku; myös koordinaatit kuten `63.06,21.68` tai havaintoaseman numero (fmisid)): mitatut päivän keski-, minimi- ja maksimilämpötilat tilastoon `whatsapp_agent:ulkolampotila`
 (ensimmäisellä kerralla vuoden ajalta, sitten kerran päivässä) ja ennuste noin 10 päivää eteenpäin.
 Sisälämpötilat agentti lukee kodin antureista. `energia_arvio` laskee toteutuneista päivistä, paljonko jokainen
 pakkasaste lisää sähkönkulutusta, ja arvioi tulevien päivien kulutuksen sääennusteesta. Kysy esim.

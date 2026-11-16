@@ -2011,7 +2011,17 @@ async def energy_daily() -> None:
 # ---------- Ulkolämpötila (Ilmatieteen laitoksen avoin data, ei avainta) ----------
 FMI_WFS = "https://opendata.fmi.fi/wfs"
 FMI_PLACE = (OPTIONS.get("saa_paikka") or "Turku").strip()
-FMI_STATE = Path("/data/lampotila.json")  # {"YYYY-MM-DD": [keski, min, max]}
+FMI_STATE = Path("/data/lampotila.json")  # {"paikka", "alku", "asema", "paivat": {"YYYY-MM-DD": [keski, min, max]}}
+
+
+def fmi_location() -> dict:
+    """saa_paikka: paikan nimi (Turku), koordinaatit (63.06,21.68) tai havaintoaseman numero (fmisid, 101462)."""
+    v = FMI_PLACE.replace(" ", "")
+    if re.fullmatch(r"-?\d+(\.\d+)?,-?\d+(\.\d+)?", v):
+        return {"latlon": v}
+    if re.fullmatch(r"\d{5,6}", v):
+        return {"fmisid": v}
+    return {"place": FMI_PLACE}
 TEMP_STAT_ID = "whatsapp_agent:ulkolampotila"
 HEATING_BASE = 17.0  # lämmitystarveluvun perusraja (°C)
 weather_lock = asyncio.Lock()
@@ -2019,6 +2029,12 @@ weather_lock = asyncio.Lock()
 
 class WeatherError(Exception):
     pass
+
+
+def fmi_station(xml: str) -> str:
+    """Vastauksen ensimmäisen pisteen koordinaatit (havaintoasema tai ennustepiste)."""
+    m = re.search(r"<gml:pos>\s*([-\d.]+)\s+([-\d.]+)", xml)
+    return f"{float(m.group(1)):.3f}, {float(m.group(2)):.3f}" if m else ""
 
 
 def fmi_parse(xml: str) -> list[tuple[str, str, float]]:
@@ -2040,9 +2056,12 @@ def fmi_parse(xml: str) -> list[tuple[str, str, float]]:
     return out
 
 
+fmi_last_station = {"pos": ""}
+
+
 async def fmi_query(query: str, params: dict) -> list[tuple[str, str, float]]:
     q = {"service": "WFS", "version": "2.0.0", "request": "getFeature", "storedquery_id": query,
-         "place": FMI_PLACE, **params}
+         **fmi_location(), **params}
     try:
         r = await http.get(FMI_WFS, params=q, timeout=60)
     except httpx.HTTPError as e:
@@ -2051,6 +2070,8 @@ async def fmi_query(query: str, params: dict) -> list[tuple[str, str, float]]:
         m = re.search(r"<ExceptionText>(.*?)</ExceptionText>", r.text, re.S)
         raise WeatherError(f"Ilmatieteen laitos vastasi virheellä {r.status_code}: "
                            f"{(m.group(1).strip() if m else r.text[:200])}")
+    if "observations" in query and fmi_station(r.text):
+        fmi_last_station["pos"] = fmi_station(r.text)
     return fmi_parse(r.text)
 
 
@@ -2100,32 +2121,43 @@ async def temp_import(days: dict[str, list[float]]) -> None:
     raise WeatherError(f"Lämpötilatilaston tuonti Home Assistantiin epäonnistui: {last_error}")
 
 
-def temp_stored() -> dict[str, list[float]]:
+def temp_state() -> dict:
+    """Tallennetut päivät; paikan vaihtuessa vanhat tiedot hylätään."""
     try:
-        return json.loads(FMI_STATE.read_text())
+        state = json.loads(FMI_STATE.read_text())
     except (OSError, ValueError):
-        return {}
+        state = {}
+    if state.get("paikka") != FMI_PLACE or not isinstance(state.get("paivat"), dict):
+        state = {"paikka": FMI_PLACE, "paivat": {}}
+    return state
+
+
+def temp_stored() -> dict[str, list[float]]:
+    return temp_state()["paivat"]
 
 
 async def weather_update(days_back: int) -> dict[str, list[float]]:
-    """Hakee puuttuvat ja viimeiset päivät, tallentaa ja tuo tilastoon. Palauttaa kaikki tallennetut päivät."""
+    """Hakee vähintään vuoden historian (kerran) ja viimeiset päivät, tallentaa ja tuo tilastoon."""
     days_back = max(1, min(days_back, 400))
     async with weather_lock:
-        stored = temp_stored()
+        state = temp_state()
         today = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-        first = today - timedelta(days=days_back)
-        missing = [d for d in range(days_back) if (first + timedelta(days=d)).date().isoformat() not in stored]
-        start = first + timedelta(days=missing[0]) if missing else today - timedelta(days=3)
-        start = min(start, today - timedelta(days=3))  # viimeiset päivät aina uudelleen (tarkentuvat)
+        want = (today - timedelta(days=max(days_back, 366))).date().isoformat()
+        start = today - timedelta(days=3)  # viimeiset päivät aina uudelleen (tarkentuvat)
+        if not state.get("alku") or state["alku"] > want:
+            start = datetime.fromisoformat(want).replace(tzinfo=TZ)
         new = await fmi_observed(start, today)
-        stored.update(new)
-        FMI_STATE.write_text(json.dumps(stored))
+        state["paivat"].update(new)
+        state["alku"] = min(state.get("alku") or want, want)
+        if fmi_last_station["pos"]:
+            state["asema"] = fmi_last_station["pos"]
+        FMI_STATE.write_text(json.dumps(state))
         if new:
             try:
                 await temp_import(new)
             except WeatherError as e:
                 log.warning("%s", e)
-        return stored
+        return state["paivat"]
 
 
 async def weather_report(days_back: int, forecast: bool) -> str:
@@ -2136,7 +2168,9 @@ async def weather_report(days_back: int, forecast: bool) -> str:
         return str(e)
     first = (datetime.now(TZ) - timedelta(days=days_back)).date().isoformat()
     obs = {d: v for d, v in stored.items() if d >= first}
-    lines = [f"Ulkolämpötila, {FMI_PLACE} (Ilmatieteen laitos), päivän keski / min / max °C."]
+    station = temp_state().get("asema")
+    lines = [f"Ulkolämpötila, {FMI_PLACE} (Ilmatieteen laitos"
+             + (f", havaintoasema {station}" if station else "") + "), päivän keski / min / max °C."]
     if obs:
         vals = [v[0] for v in obs.values()]
         lines.append(f"Mitattu ({len(obs)} pv, keskiarvo {sum(vals) / len(vals):.1f} °C):")
@@ -2213,7 +2247,7 @@ async def weather_daily() -> None:
     await asyncio.sleep(300)
     while True:
         try:
-            await weather_update(400 if not temp_stored() else 14)
+            await weather_update(14)
             log.info("Ulkolämpötilat päivitetty (%s)", FMI_PLACE)
         except Exception as e:  # ei saa kaataa agenttia
             log.warning("Ulkolämpötilojen päivitys epäonnistui: %s", e)
