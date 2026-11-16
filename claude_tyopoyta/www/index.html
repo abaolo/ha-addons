@@ -27,7 +27,11 @@
              border-radius: 8px; padding: 8px; font-size: 16px; font-family: inherit; height: 42px; }
   #laheta { background: var(--acc); border-color: var(--acc); }
   #linkit { position: absolute; inset: 0; background: rgba(0,0,0,.92); padding: 14px; overflow: auto; display: none; z-index: 5; }
-  #linkit.auki { display: block; }
+  #linkit.auki, #eta.auki { display: block; }
+  #eta { position: absolute; inset: 0; background: rgba(0,0,0,.94); padding: 14px; overflow: auto; display: none; z-index: 6; }
+  #eta h3 { margin: 0 0 10px; font-size: 16px; }
+  #eta pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; background: #0d0d0d; border: 1px solid var(--line);
+             border-radius: 8px; padding: 10px; min-height: 120px; }
   #linkit h3 { margin: 0 0 10px; font-size: 16px; }
   .linkki { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
   .linkki code { display: block; word-break: break-all; font-size: 13px; color: #cfd8ff; margin-bottom: 8px; user-select: all; }
@@ -41,11 +45,24 @@
   <button id="b-term" class="on" onclick="show('term')">Pääte</button>
   <button id="b-vnc" onclick="show('vnc')">Selain</button>
   <button onclick="avaaLinkit()">Linkit</button>
+  <button onclick="avaaEta()">Etäohjaus</button>
   <span class="vihje">Kirjautumiset ja kuvavarmenteet: Selain</span>
 </nav>
 <main>
   <iframe id="term" class="on" src="terminal/"></iframe>
   <iframe id="vnc" src="vnc/"></iframe>
+  <div id="eta" class="paneeli">
+    <h3>Etäohjauksen tila</h3>
+    <pre id="etateksti">Haetaan…</pre>
+    <div class="rivi napit">
+      <button onclick="etaNappi('Up')">↑</button>
+      <button onclick="etaNappi('Down')">↓</button>
+      <button onclick="etaNappi('Enter')">Enter</button>
+      <button onclick="etaNappi('Escape')">Esc</button>
+      <button onclick="avaaEta()">Päivitä</button>
+      <button onclick="suljeEta()">Sulje</button>
+    </div>
+  </div>
   <div id="linkit">
     <h3>Linkit päätteestä (uusin ensin)</h3>
     <div id="lista">Haetaan…</div>
@@ -129,6 +146,20 @@
       }
     } catch (e) { lista.textContent = "Linkkien haku epäonnistui."; }
   }
+  async function avaaEta() {
+    const box = document.getElementById("eta"), pre = document.getElementById("etateksti");
+    box.classList.add("auki"); pre.textContent = "Haetaan…";
+    try {
+      const d = await (await fetch("api/etaohjaus", { cache: "no-store" })).json();
+      pre.textContent = d.kaynnissa ? (d.teksti || "(tyhjä)") :
+        "Etäohjaus ei ole käynnissä. Laita lisäosan asetus etaohjaus päälle ja käynnistä lisäosa uudelleen.";
+    } catch (e) { pre.textContent = "Tilan haku epäonnistui."; }
+  }
+  async function etaNappi(n) {
+    try { await post("api/nappi", { nappi: n, ikkuna: "etaohjaus" }); setTimeout(avaaEta, 800); }
+    catch (e) { ilmoita("Epäonnistui: " + e.message); }
+  }
+  function suljeEta() { document.getElementById("eta").classList.remove("auki"); }
   function suljeLinkit() { document.getElementById("linkit").classList.remove("auki"); }
   try { const v = localStorage.getItem("valilehti"); if (v) show(v); } catch (e) {}
 </script>

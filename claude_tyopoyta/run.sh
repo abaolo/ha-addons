@@ -40,6 +40,12 @@ websockify --web /usr/share/novnc 127.0.0.1:6081 localhost:5900 >/tmp/websockify
 # Pääte: tmux-istunto säilyy, vaikka paneelin sulkee
 tmux -u new-session -d -s claude -c "$WORK" -n paate
 tmux send-keys -t claude:paate "cd $WORK && clear && echo 'Kirjoita: claude   (ensimmäisellä kerralla /login; kirjautumissivu avautuu Selain-välilehdelle)'" Enter
+# Työkansio luotetuksi (muuten Claude Code jää kysymään luottamusta taustalla ajettavassa etäohjauksessa)
+if [ -f "$HOME/.claude.json" ]; then
+    tmp=$(mktemp)
+    jq --arg w "$WORK" '.projects[$w].hasTrustDialogAccepted = true' "$HOME/.claude.json" > "$tmp" \
+        && mv "$tmp" "$HOME/.claude.json" || rm -f "$tmp"
+fi
 if jq -e '.etaohjaus == true' /data/options.json >/dev/null 2>&1; then
     echo "Claude-työpöytä: etäohjaus päällä (claude remote-control)"
     tmux new-window -d -t claude -n etaohjaus -c "$WORK" \

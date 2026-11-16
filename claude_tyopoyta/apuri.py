@@ -6,6 +6,7 @@ import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TARGET = "claude"  # tmux-istunnon aktiivinen ikkuna
+RC_WINDOW = "claude:etaohjaus"
 KEYS = {"Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "C-c", "C-d", "BSpace", "Space"}
 URL_RE = re.compile(r"https?://[^\s<>\"'`]+")
 
@@ -39,6 +40,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path.rstrip("/").endswith("/linkit"):
             return self._json(200, {"linkit": links()})
+        if self.path.rstrip("/").endswith("/etaohjaus"):
+            windows = tmux("list-windows", "-t", "claude", "-F", "#{window_name}").split()
+            if "etaohjaus" not in windows:
+                return self._json(200, {"kaynnissa": False, "teksti": ""})
+            text = tmux("capture-pane", "-p", "-J", "-S", "-60", "-t", RC_WINDOW)
+            return self._json(200, {"kaynnissa": True, "teksti": text.rstrip()})
         self._json(404, {"virhe": "tuntematon"})
 
     def do_POST(self) -> None:
@@ -57,7 +64,7 @@ class Handler(BaseHTTPRequestHandler):
             key = str(data.get("nappi", ""))
             if key not in KEYS:
                 return self._json(400, {"virhe": "näppäin ei sallittu"})
-            tmux("send-keys", "-t", TARGET, key)
+            tmux("send-keys", "-t", RC_WINDOW if data.get("ikkuna") == "etaohjaus" else TARGET, key)
             return self._json(200, {"ok": True})
         self._json(404, {"virhe": "tuntematon"})
 
