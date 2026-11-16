@@ -2047,14 +2047,13 @@ class WeatherError(Exception):
     pass
 
 
-def fmi_station(xml: str) -> str:
-    """Vastauksen ensimmäisen pisteen koordinaatit (havaintoasema tai ennustepiste)."""
-    m = re.search(r"<gml:pos>\s*([-\d.]+)\s+([-\d.]+)", xml)
-    return f"{float(m.group(1)):.3f}, {float(m.group(2)):.3f}" if m else ""
-
-
 def fmi_parse(xml: str) -> list[tuple[str, str, float]]:
     """BsWfs-vastauksesta (aika, parametri, arvo); NaN-arvot ohitetaan."""
+    return [r[:3] for r in fmi_parse_pos(xml)]
+
+
+def fmi_parse_pos(xml: str) -> list[tuple[str, str, float, str]]:
+    """Kuten fmi_parse, lisäksi pisteen (aseman) koordinaatit "lat, lon"."""
     out = []
     for el in re.findall(r"<BsWfs:BsWfsElement.*?</BsWfs:BsWfsElement>", xml, re.S):
         m_t = re.search(r"<BsWfs:Time>(.*?)</BsWfs:Time>", el)
@@ -2068,14 +2067,16 @@ def fmi_parse(xml: str) -> list[tuple[str, str, float]]:
             continue
         if v != v:  # NaN
             continue
-        out.append((m_t.group(1), m_p.group(1), v))
+        m_pos = re.search(r"<gml:pos>\s*([-\d.]+)\s+([-\d.]+)", el)
+        pos = f"{float(m_pos.group(1)):.3f}, {float(m_pos.group(2)):.3f}" if m_pos else ""
+        out.append((m_t.group(1), m_p.group(1), v, pos))
     return out
 
 
 fmi_last_station = {"pos": ""}
 
 
-async def fmi_query(query: str, params: dict) -> list[tuple[str, str, float]]:
+async def fmi_query(query: str, params: dict, with_pos: bool = False) -> list:
     q = {"service": "WFS", "version": "2.0.0", "request": "getFeature", "storedquery_id": query,
          **fmi_location(), **params}
     try:
@@ -2086,25 +2087,51 @@ async def fmi_query(query: str, params: dict) -> list[tuple[str, str, float]]:
         m = re.search(r"<ExceptionText>(.*?)</ExceptionText>", r.text, re.S)
         raise WeatherError(f"Ilmatieteen laitos vastasi virheellä {r.status_code}: "
                            f"{(m.group(1).strip() if m else r.text[:200])}")
-    if "observations" in query and fmi_station(r.text):
-        fmi_last_station["pos"] = fmi_station(r.text)
-    return fmi_parse(r.text)
+    return fmi_parse_pos(r.text) if with_pos else fmi_parse(r.text)
 
 
-async def fmi_observed(start: datetime, end: datetime) -> dict[str, list[float]]:
-    """Mitatut päiväarvot [keski, min, max]; haetaan 30 päivän paloissa (rajapinnan aikarajat)."""
-    days: dict[str, dict[str, float]] = {}
+def fmi_pick_station(counts: dict[str, int], preferred: str = "") -> str:
+    """Asema, jonka tiedot käytetään: aiemmin käytetty, muuten lähin pyydettyä pistettä, jolla on riittävästi mittauksia."""
+    if preferred in counts:
+        return preferred
+    enough = [p for p, n in counts.items() if n >= max(counts.values()) * 0.8]
+    m = re.fullmatch(r"(-?[\d.]+),(-?[\d.]+)", FMI_PLACE.replace(" ", ""))
+    if not m:
+        return max(enough, key=lambda p: counts[p])
+    lat0, lon0 = float(m.group(1)), float(m.group(2))
+
+    def dist(p: str) -> float:
+        lat, lon = (float(x) for x in p.split(","))
+        return (lat - lat0) ** 2 + ((lon - lon0) * 0.45) ** 2  # pituusaste kapenee Suomen leveyksillä
+
+    return min(enough, key=dist)
+
+
+async def fmi_observed(start: datetime, end: datetime, preferred: str = "") -> dict[str, list[float]]:
+    """Mitatut päiväarvot [keski, min, max] Suomen ajan päivittäin tunneittaisesta lämpötilasta (t2m).
+    Haetaan viikon paloissa viideltä lähimmältä asemalta; käytetään yhtä asemaa (fmi_pick_station)."""
+    hourly: dict[str, dict[str, float]] = {}  # asema -> {aika: arvo}
     cur = start
     while cur < end:
-        nxt = min(cur + timedelta(days=30), end)
-        rows = await fmi_query("fmi::observations::weather::daily::simple", {
-            "parameters": "tday,tmin,tmax",
-            "starttime": cur.strftime("%Y-%m-%dT00:00:00Z"), "endtime": nxt.strftime("%Y-%m-%dT00:00:00Z")})
-        for time, par, v in rows:
-            days.setdefault(time[:10], {})[par] = v
-        cur = nxt + timedelta(days=1)
-    return {d: [v["tday"], v.get("tmin", v["tday"]), v.get("tmax", v["tday"])]
-            for d, v in days.items() if "tday" in v}
+        nxt = min(cur + timedelta(days=7), end)
+        rows = await fmi_query("fmi::observations::weather::simple", {
+            "parameters": "t2m", "timestep": "60", "maxlocations": "5",
+            "starttime": cur.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "endtime": nxt.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")}, with_pos=True)
+        for time, _par, v, pos in rows:
+            hourly.setdefault(pos, {})[time] = v
+        cur = nxt
+    if not hourly:
+        return {}
+    station = fmi_pick_station({p: len(v) for p, v in hourly.items()}, preferred)
+    fmi_last_station["pos"] = station
+    per_day: dict[str, list[float]] = {}
+    for time, v in hourly[station].items():
+        local = datetime.fromisoformat(time.replace("Z", "+00:00")).astimezone(TZ)
+        per_day.setdefault(local.date().isoformat(), []).append(v)
+    today = datetime.now(TZ).date().isoformat()
+    return {d: [round(sum(vs) / len(vs), 1), min(vs), max(vs)]
+            for d, vs in sorted(per_day.items()) if d < today and len(vs) >= 18}
 
 
 async def fmi_forecast() -> dict[str, list[float]]:
@@ -2145,6 +2172,9 @@ def temp_state() -> dict:
         state = {}
     if state.get("paikka") != FMI_PLACE or not isinstance(state.get("paivat"), dict):
         state = {"paikka": FMI_PLACE, "paivat": {}}
+    if not state["paivat"]:  # aiempi tyhjä haku ei merkitse historiaa haetuksi
+        state.pop("alku", None)
+        state.pop("asema", None)
     return state
 
 
@@ -2163,9 +2193,13 @@ async def weather_update(days_back: int) -> dict[str, list[float]]:
         start = today - timedelta(days=3)  # viimeiset päivät aina uudelleen (tarkentuvat)
         if not state.get("alku") or state["alku"] > want:
             start = datetime.fromisoformat(want).replace(tzinfo=TZ)
-        new = await fmi_observed(start, today)
+        new = await fmi_observed(start, datetime.now(TZ), state.get("asema", ""))
+        if not new:
+            log.warning("Ilmatieteen laitokselta ei saatu lämpötilahavaintoja (%s, %s alkaen)", FMI_PLACE, start.date())
+            return state["paivat"]
         state["paivat"].update(new)
-        state["alku"] = min(state.get("alku") or want, want)
+        if start.date().isoformat() <= want:
+            state["alku"] = min(state.get("alku") or want, want)
         if fmi_last_station["pos"]:
             state["asema"] = fmi_last_station["pos"]
         FMI_STATE.write_text(json.dumps(state))
@@ -2194,6 +2228,9 @@ async def weather_report(days_back: int, forecast: bool) -> str:
         lines.append(f"Mitattu ({len(obs)} pv, keskiarvo {sum(vals) / len(vals):.1f} °C):")
         lines += [f"{fi_day(d)}: {v[0]:.1f} / {v[1]:.1f} / {v[2]:.1f}"
                   for d, v in sorted(obs.items())[-60:]]
+    if not obs:
+        lines.append("Mitattuja arvoja ei saatu Ilmatieteen laitokselta (ei havaintoasemaa paikan lähellä tai "
+                     "rajapinta ei vastannut). Älä korvaa niitä kodin antureilla, ellei käyttäjä kerro ulkoanturia.")
     if fc:
         lines.append("Ennuste:")
         lines += [f"{fi_day(d)}: {v[0]:.1f} / {v[1]:.1f} / {v[2]:.1f}" for d, v in fc.items()]

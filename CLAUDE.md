@@ -28,7 +28,7 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
   oman kulutuspyynnön aikavälin (`page.route`) ja tuo päiväarvot tilastoon `whatsapp_agent:sahkonkulutus`
   (`recorder/import_statistics`), kerran päivässä. Salasana peitetään selaimen näkymistä.
 - Ulkolämpötila: Ilmatieteen laitoksen avoin data (`opendata.fmi.fi`, ei avainta, asetus `saa_paikka`, oletus `koti` = HA:n `zone.home`), päivän
-  keski/min/max tilastoon `whatsapp_agent:ulkolampotila` ja `/data/lampotila.json`; ennuste ~10 pv. `energia_arvio`
+  keski/min/max tunneittaisesta t2m:stä (lähin 5 asemasta, viikon palat) tilastoon `whatsapp_agent:ulkolampotila` ja `/data/lampotila.json`; ennuste ~10 pv. `energia_arvio`
   sovittaa kWh = perus + kerroin × max(0, 17 °C − T) ja ennustaa kulutuksen. Sisälämpötilat HA:n antureista.
 - Tiedostot: `/share/agent` (reseptit/, asetukset/, ruokalistat/, saapuneet/, ostokset/).
 - Keskusteluhistoria: `/data/historia/` (säilyy uudelleenkäynnistyksissä ja päivityksissä). Lyhennys koon mukaan
