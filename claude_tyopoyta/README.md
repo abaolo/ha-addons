@@ -16,8 +16,9 @@ paneelin **Selain**-välilehdellä, ja agentti jatkaa sen jälkeen.
 - **Pääte**-välilehden alareunassa on tekstikenttä: kirjoita tai liitä teksti (esim. kirjautumiskoodi) ja paina
   **Lähetä**. Näppäimillä ↑ ↓ Enter Esc Tab valitaan vaihtoehtoja Clauden valikoista.
 - **Linkit** poimii päätteestä kaikki osoitteet kokonaisina: avaa puhelimen selaimessa tai kopioi.
-- Kun Claude avaa sivun (myös `/login`), se aukeaa **Selain**-välilehdelle. Käännä puhelin vaakaan; noVNC:n
-  sivupalkista saa näppäimistön esiin.
+- Kun Claude avaa sivun (myös `/login`), se aukeaa **Selain**-välilehdelle. Painike **🖥 Tietokone / 📱 Puhelin**
+  vaihtaa selaimen näytön pystymalliseksi (450×800), jolloin sivut näkyvät puhelimella luettavan kokoisina.
+  noVNC:n sivupalkista saa näppäimistön esiin.
 
 ## Etäohjaus Claude-sovelluksesta
 

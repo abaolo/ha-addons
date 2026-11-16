@@ -20,7 +20,17 @@ for i in $(seq 1 20); do
     [ -e /tmp/.X11-unix/X99 ] && break
     sleep 0.5
 done
-x11vnc -display :99 -localhost -rfbport 5900 -forever -shared -nopw -quiet -bg -o /tmp/x11vnc.log \
+# Näytön koot: tietokone 1280x800, puhelin 450x800 (pysty). Valinta /data/naytto.txt, vaihto paneelista.
+for i in $(seq 1 20); do
+    xrandr >/dev/null 2>&1 && break
+    sleep 0.5
+done
+xrandr --newmode 450x800 0 450 0 0 0 800 0 0 0 2>/dev/null
+xrandr --addmode screen 450x800 2>/dev/null
+SIZE=1280x800
+[ "$(cat /data/naytto.txt 2>/dev/null)" = "puhelin" ] && SIZE=450x800
+xrandr --output screen --mode "$SIZE" 2>/dev/null
+x11vnc -xrandr -display :99 -localhost -rfbport 5900 -forever -shared -nopw -quiet -bg -o /tmp/x11vnc.log \
     || echo "x11vnc ei käynnistynyt (katso /tmp/x11vnc.log)"
 websockify --web /usr/share/novnc 127.0.0.1:6081 localhost:5900 >/tmp/websockify.log 2>&1 &
 
@@ -28,10 +38,12 @@ websockify --web /usr/share/novnc 127.0.0.1:6081 localhost:5900 >/tmp/websockify
 (
     while true; do
         sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' /data/chromium/Default/Preferences 2>/dev/null
+        WSIZE=1280,800
+        [ "$(cat /data/naytto.txt 2>/dev/null)" = "puhelin" ] && WSIZE=450,800
         chromium --no-sandbox --user-data-dir=/data/chromium \
             --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
             --no-first-run --no-default-browser-check --disable-session-crashed-bubble \
-            --disable-dev-shm-usage --window-position=0,0 --window-size=1280,800 \
+            --disable-dev-shm-usage --window-position=0,0 --window-size=$WSIZE \
             --disable-features=Translate --lang=fi about:blank >/tmp/chromium.log 2>&1
         sleep 3
     done
@@ -55,6 +67,8 @@ ttyd -p 7681 -i lo -W -t fontSize=14 -t titleFixed=Claude -t rendererType=dom tm
     >/tmp/ttyd.log 2>&1 &
 
 python3 /app/apuri.py >/tmp/apuri.log 2>&1 &
+# Tallennettu näytön koko (puhelin/tietokone) käyttöön, kun Chromium on käynnissä
+(sleep 6; cd /app && python3 -c "import apuri; apuri.set_display(apuri.current_display())" >>/tmp/apuri.log 2>&1) &
 
 echo "Claude-työpöytä: paneeli valmis"
 exec nginx -c /app/nginx.conf -g 'daemon off;'

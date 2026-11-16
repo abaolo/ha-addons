@@ -9,6 +9,34 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TARGET = "claude"  # tmux-istunnon aktiivinen ikkuna
 RC_WINDOW = "claude:etaohjaus"
+SIZES = {"puhelin": (450, 800), "tietokone": (1280, 800)}
+SIZE_FILE = "/data/naytto.txt"
+ENV_X = {**__import__("os").environ, "DISPLAY": ":99"}
+
+
+def set_display(name: str) -> None:
+    """Vaihtaa virtuaalinäytön ja Chromium-ikkunan koon (noVNC seuraa x11vnc:n -xrandr-asetuksella)."""
+    w, h = SIZES[name]
+    mode = f"{w}x{h}"
+    if mode not in subprocess.run(["xrandr"], env=ENV_X, capture_output=True, text=True, timeout=10).stdout:
+        subprocess.run(["xrandr", "--newmode", mode, "0", str(w), "0", "0", "0", str(h), "0", "0", "0"],
+                       env=ENV_X, timeout=10)
+        subprocess.run(["xrandr", "--addmode", "screen", mode], env=ENV_X, timeout=10)
+    subprocess.run(["xrandr", "--output", "screen", "--mode", mode], env=ENV_X, timeout=10)
+    ids = subprocess.run(["xdotool", "search", "--onlyvisible", "--class", "chromium"], env=ENV_X,
+                         capture_output=True, text=True, timeout=10).stdout.split()
+    for wid in ids:
+        subprocess.run(["xdotool", "windowsize", wid, str(w), str(h), "windowmove", wid, "0", "0"],
+                       env=ENV_X, timeout=10)
+    with open(SIZE_FILE, "w") as f:
+        f.write(name)
+
+
+def current_display() -> str:
+    try:
+        return open(SIZE_FILE).read().strip() or "tietokone"
+    except OSError:
+        return "tietokone"
 KEYS = {"y", "n", "Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "C-c", "C-d", "BSpace", "Space"}
 URL_RE = re.compile(r"https?://[^\s<>\"'`]+")
 
@@ -42,6 +70,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path.rstrip("/").endswith("/linkit"):
             return self._json(200, {"linkit": links()})
+        if self.path.rstrip("/").endswith("/naytto"):
+            return self._json(200, {"koko": current_display()})
         if self.path.rstrip("/").endswith("/etaohjaus"):
             windows = tmux("list-windows", "-t", "claude", "-F", "#{window_name}").split()
             if "etaohjaus" not in windows:
@@ -62,6 +92,12 @@ class Handler(BaseHTTPRequestHandler):
             if data.get("enter", True):
                 tmux("send-keys", "-t", TARGET, "Enter")
             return self._json(200, {"ok": True})
+        if self.path.rstrip("/").endswith("/naytto"):
+            name = str(data.get("koko", ""))
+            if name not in SIZES:
+                return self._json(400, {"virhe": "tuntematon koko"})
+            set_display(name)
+            return self._json(200, {"koko": name})
         if self.path.rstrip("/").endswith("/nappi"):
             key = str(data.get("nappi", ""))
             if key not in KEYS:

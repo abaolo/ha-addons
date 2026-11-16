@@ -6,7 +6,7 @@ FROM node:22-bookworm-slim
 # nginx: yhdistää näytön ja päätteen yhteen ingress-porttiin
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        xvfb x11vnc novnc websockify chromium fonts-dejavu-core fonts-liberation \
+        xvfb x11vnc x11-xserver-utils xdotool novnc websockify chromium fonts-dejavu-core fonts-liberation \
         nginx tmux git curl ca-certificates jq less procps python3 python3-venv python3-pip \
     && rm -rf /var/lib/apt/lists/*
 

@@ -46,6 +46,7 @@
   <button id="b-vnc" onclick="show('vnc')">Selain</button>
   <button onclick="avaaLinkit()">Linkit</button>
   <button onclick="avaaEta()">Etäohjaus</button>
+  <button id="b-koko" onclick="vaihdaKoko()" title="Selaimen näytön koko">📱 / 🖥</button>
   <span class="vihje">Kirjautumiset ja kuvavarmenteet: Selain</span>
 </nav>
 <main>
@@ -161,6 +162,16 @@
     try { await post("api/nappi", { nappi: n, ikkuna: "etaohjaus" }); setTimeout(avaaEta, 800); }
     catch (e) { ilmoita("Epäonnistui: " + e.message); }
   }
+  let koko = "tietokone";
+  function naytaKoko() {
+    document.getElementById("b-koko").textContent = koko === "puhelin" ? "📱 Puhelin" : "🖥 Tietokone";
+  }
+  async function vaihdaKoko() {
+    const uusi = koko === "puhelin" ? "tietokone" : "puhelin";
+    try { await post("api/naytto", { koko: uusi }); koko = uusi; naytaKoko(); ilmoita("Selaimen koko: " + uusi); }
+    catch (e) { ilmoita("Koon vaihto epäonnistui: " + e.message); }
+  }
+  fetch("api/naytto", { cache: "no-store" }).then(r => r.json()).then(d => { koko = d.koko; naytaKoko(); }).catch(() => {});
   function suljeEta() { document.getElementById("eta").classList.remove("auki"); }
   function suljeLinkit() { document.getElementById("linkit").classList.remove("auki"); }
   try { const v = localStorage.getItem("valilehti"); if (v) show(v); } catch (e) {}
