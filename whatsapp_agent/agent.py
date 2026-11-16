@@ -593,9 +593,28 @@ TOOLS = [
             "paivia": {"type": "integer", "description": "Montako päivää taaksepäin haetaan (oletus 40, enintään 400)"}}},
     },
     {
+        "name": "saa_lampotilat",
+        "description": "Ulkolämpötilat Ilmatieteen laitokselta (asetus saa_paikka): mitatut päivän keskiarvo/min/max "
+        "taaksepäin ja ennuste noin 10 päivää eteenpäin. Tuo mitatut arvot myös Home Assistantin tilastoon "
+        "whatsapp_agent:ulkolampotila. Sisälämpötilat luetaan Home Assistantin antureista (ha_get_states, ha_historia, "
+        "ha_tilastot).",
+        "input_schema": {"type": "object", "properties": {
+            "paivia": {"type": "integer", "description": "Montako päivää taaksepäin (oletus 14, enintään 400)"},
+            "ennuste": {"type": "boolean", "description": "Mukaan ennuste (oletus true)"}}},
+    },
+    {
+        "name": "energia_arvio",
+        "description": "Arvioi lämpötilan vaikutuksen sähkönkulutukseen: sovittaa toteutuneisiin päiviin mallin "
+        "kWh = perus + kerroin × lämmitystarve (17 °C − ulkolämpötila) ja ennustaa tulevien päivien kulutuksen "
+        "sääennusteesta. Käyttää EnergiaOnlinesta haettua kulutusta (energia_paivita) ja Ilmatieteen laitoksen lämpötiloja.",
+        "input_schema": {"type": "object", "properties": {
+            "paivia": {"type": "integer", "description": "Montako toteutunutta päivää mallissa (oletus 120)"},
+            "lampotila": {"type": "number", "description": "Valinnainen: arvioi kulutus tälle päivän keskilämpötilalle"}}},
+    },
+    {
         "name": "ha_historia",
         "description": "Hakee Home Assistant -anturin arvot aikaväliltä (lyhyt historia, yleensä 10 päivää), "
-        "esim. lämpötila tai päivän sähkönkulutus. Palauttaa enintään 200 pistettä.",
+        "esim. sisälämpötila tai päivän sähkönkulutus. Palauttaa enintään 200 pistettä. Pidemmät ajat: ha_tilastot.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1989,6 +2008,222 @@ async def energy_daily() -> None:
         await asyncio.sleep((nxt - now).total_seconds())
 
 
+# ---------- Ulkolämpötila (Ilmatieteen laitoksen avoin data, ei avainta) ----------
+FMI_WFS = "https://opendata.fmi.fi/wfs"
+FMI_PLACE = (OPTIONS.get("saa_paikka") or "Turku").strip()
+FMI_STATE = Path("/data/lampotila.json")  # {"YYYY-MM-DD": [keski, min, max]}
+TEMP_STAT_ID = "whatsapp_agent:ulkolampotila"
+HEATING_BASE = 17.0  # lämmitystarveluvun perusraja (°C)
+weather_lock = asyncio.Lock()
+
+
+class WeatherError(Exception):
+    pass
+
+
+def fmi_parse(xml: str) -> list[tuple[str, str, float]]:
+    """BsWfs-vastauksesta (aika, parametri, arvo); NaN-arvot ohitetaan."""
+    out = []
+    for el in re.findall(r"<BsWfs:BsWfsElement.*?</BsWfs:BsWfsElement>", xml, re.S):
+        m_t = re.search(r"<BsWfs:Time>(.*?)</BsWfs:Time>", el)
+        m_p = re.search(r"<BsWfs:ParameterName>(.*?)</BsWfs:ParameterName>", el)
+        m_v = re.search(r"<BsWfs:ParameterValue>(.*?)</BsWfs:ParameterValue>", el)
+        if not (m_t and m_p and m_v):
+            continue
+        try:
+            v = float(m_v.group(1))
+        except ValueError:
+            continue
+        if v != v:  # NaN
+            continue
+        out.append((m_t.group(1), m_p.group(1), v))
+    return out
+
+
+async def fmi_query(query: str, params: dict) -> list[tuple[str, str, float]]:
+    q = {"service": "WFS", "version": "2.0.0", "request": "getFeature", "storedquery_id": query,
+         "place": FMI_PLACE, **params}
+    try:
+        r = await http.get(FMI_WFS, params=q, timeout=60)
+    except httpx.HTTPError as e:
+        raise WeatherError(f"Ilmatieteen laitoksen rajapinta ei vastannut: {e}") from e
+    if r.status_code >= 400:
+        m = re.search(r"<ExceptionText>(.*?)</ExceptionText>", r.text, re.S)
+        raise WeatherError(f"Ilmatieteen laitos vastasi virheellä {r.status_code}: "
+                           f"{(m.group(1).strip() if m else r.text[:200])}")
+    return fmi_parse(r.text)
+
+
+async def fmi_observed(start: datetime, end: datetime) -> dict[str, list[float]]:
+    """Mitatut päiväarvot [keski, min, max]; haetaan 30 päivän paloissa (rajapinnan aikarajat)."""
+    days: dict[str, dict[str, float]] = {}
+    cur = start
+    while cur < end:
+        nxt = min(cur + timedelta(days=30), end)
+        rows = await fmi_query("fmi::observations::weather::daily::simple", {
+            "parameters": "tday,tmin,tmax",
+            "starttime": cur.strftime("%Y-%m-%dT00:00:00Z"), "endtime": nxt.strftime("%Y-%m-%dT00:00:00Z")})
+        for time, par, v in rows:
+            days.setdefault(time[:10], {})[par] = v
+        cur = nxt + timedelta(days=1)
+    return {d: [v["tday"], v.get("tmin", v["tday"]), v.get("tmax", v["tday"])]
+            for d, v in days.items() if "tday" in v}
+
+
+async def fmi_forecast() -> dict[str, list[float]]:
+    """Ennusteen päiväarvot [keski, min, max] Suomen ajan päivittäin tunneittaisista arvoista."""
+    rows = await fmi_query("fmi::forecast::edited::weather::scandinavia::point::simple",
+                           {"parameters": "Temperature", "timestep": "60"})
+    per_day: dict[str, list[float]] = {}
+    for time, _par, v in rows:
+        local = datetime.fromisoformat(time.replace("Z", "+00:00")).astimezone(TZ)
+        per_day.setdefault(local.date().isoformat(), []).append(v)
+    today = datetime.now(TZ).date().isoformat()
+    return {d: [round(sum(vs) / len(vs), 1), min(vs), max(vs)]
+            for d, vs in sorted(per_day.items()) if d >= today and len(vs) >= 6}
+
+
+async def temp_import(days: dict[str, list[float]]) -> None:
+    stats = [{"start": datetime.fromisoformat(d).replace(tzinfo=TZ).isoformat(),
+              "mean": v[0], "min": v[1], "max": v[2]} for d, v in sorted(days.items())]
+    base = {"has_sum": False, "name": f"Ulkolämpötila ({FMI_PLACE}, Ilmatieteen laitos)", "source": "whatsapp_agent",
+            "statistic_id": TEMP_STAT_ID, "unit_of_measurement": "°C"}
+    variants = [{**base, "mean_type": 1, "unit_class": "temperature"}, {**base, "mean_type": 1},
+                {**base, "has_mean": True}]
+    last_error = None
+    for meta in variants:  # Home Assistantin versiot eroavat metatietojen kentissä
+        try:
+            await ha_ws({"type": "recorder/import_statistics", "metadata": meta, "stats": stats})
+            return
+        except RuntimeError as e:
+            last_error = e
+    raise WeatherError(f"Lämpötilatilaston tuonti Home Assistantiin epäonnistui: {last_error}")
+
+
+def temp_stored() -> dict[str, list[float]]:
+    try:
+        return json.loads(FMI_STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+async def weather_update(days_back: int) -> dict[str, list[float]]:
+    """Hakee puuttuvat ja viimeiset päivät, tallentaa ja tuo tilastoon. Palauttaa kaikki tallennetut päivät."""
+    days_back = max(1, min(days_back, 400))
+    async with weather_lock:
+        stored = temp_stored()
+        today = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        first = today - timedelta(days=days_back)
+        missing = [d for d in range(days_back) if (first + timedelta(days=d)).date().isoformat() not in stored]
+        start = first + timedelta(days=missing[0]) if missing else today - timedelta(days=3)
+        start = min(start, today - timedelta(days=3))  # viimeiset päivät aina uudelleen (tarkentuvat)
+        new = await fmi_observed(start, today)
+        stored.update(new)
+        FMI_STATE.write_text(json.dumps(stored))
+        if new:
+            try:
+                await temp_import(new)
+            except WeatherError as e:
+                log.warning("%s", e)
+        return stored
+
+
+async def weather_report(days_back: int, forecast: bool) -> str:
+    try:
+        stored = await weather_update(days_back)
+        fc = await fmi_forecast() if forecast else {}
+    except WeatherError as e:
+        return str(e)
+    first = (datetime.now(TZ) - timedelta(days=days_back)).date().isoformat()
+    obs = {d: v for d, v in stored.items() if d >= first}
+    lines = [f"Ulkolämpötila, {FMI_PLACE} (Ilmatieteen laitos), päivän keski / min / max °C."]
+    if obs:
+        vals = [v[0] for v in obs.values()]
+        lines.append(f"Mitattu ({len(obs)} pv, keskiarvo {sum(vals) / len(vals):.1f} °C):")
+        lines += [f"{fi_day(d)}: {v[0]:.1f} / {v[1]:.1f} / {v[2]:.1f}"
+                  for d, v in sorted(obs.items())[-60:]]
+    if fc:
+        lines.append("Ennuste:")
+        lines += [f"{fi_day(d)}: {v[0]:.1f} / {v[1]:.1f} / {v[2]:.1f}" for d, v in fc.items()]
+    lines.append(f"Tilasto Home Assistantissa: {TEMP_STAT_ID}")
+    return "\n".join(lines)
+
+
+def fi_day(day: str) -> str:
+    d = datetime.fromisoformat(day)
+    return f"{'ma ti ke to pe la su'.split()[d.weekday()]} {d:%d.%m.}"
+
+
+def fit_heating(pairs: list[tuple[float, float]]) -> tuple[float, float, float]:
+    """Pienimmän neliösumman suora kWh = a + b·HDD. Palauttaa (a, b, r²)."""
+    n = len(pairs)
+    mx = sum(x for x, _ in pairs) / n
+    my = sum(y for _, y in pairs) / n
+    sxx = sum((x - mx) ** 2 for x, _ in pairs)
+    sxy = sum((x - mx) * (y - my) for x, y in pairs)
+    b = sxy / sxx if sxx > 1e-9 else 0.0
+    a = my - b * mx
+    ss_tot = sum((y - my) ** 2 for _, y in pairs)
+    ss_res = sum((y - (a + b * x)) ** 2 for x, y in pairs)
+    return a, b, (1 - ss_res / ss_tot) if ss_tot > 1e-9 else 0.0
+
+
+async def energy_estimate(days_back: int, temp: float | None) -> str:
+    try:
+        energy = json.loads(EO_STATE.read_text())
+    except (OSError, ValueError):
+        return "Sähkönkulutusta ei ole vielä haettu. Aja ensin energia_paivita."
+    days_back = max(14, min(days_back, 400))
+    try:
+        temps = await weather_update(days_back)
+        fc = await fmi_forecast()
+    except WeatherError as e:
+        return str(e)
+    first = (datetime.now(TZ) - timedelta(days=days_back)).date().isoformat()
+    pairs = [(max(0.0, HEATING_BASE - temps[d][0]), energy[d]) for d in sorted(energy)
+             if d >= first and d in temps and energy[d] is not None]
+    if len(pairs) < 10:
+        return f"Liian vähän päiviä, joilta on sekä kulutus että lämpötila ({len(pairs)}). Tarvitaan vähintään 10."
+    a, b, r2 = fit_heating(pairs)
+    hdd = [x for x, _ in pairs]
+    lines = [f"Malli {len(pairs)} päivästä (ulkolämpötila {HEATING_BASE - max(hdd):.1f}…{HEATING_BASE - min(hdd):.1f} °C):",
+             f"- Perkulutus ilman lämmitystä noin {a:.1f} kWh/vrk",
+             f"- Jokainen aste alle {HEATING_BASE:.0f} °C lisää noin {b:.2f} kWh/vrk",
+             f"- Selitysaste R² = {r2:.2f} ({'lämpötila selittää kulutusta hyvin' if r2 >= 0.6 else 'kulutukseen vaikuttaa paljon muukin kuin lämpötila' if r2 >= 0.3 else 'lämpötila selittää kulutusta heikosti'})"]
+    if max(hdd) - min(hdd) < 5:
+        lines.append("- Huom: lämpötilavaihtelu on ollut pientä, joten kerroin on epävarma.")
+
+    def pred(t: float) -> float:
+        return max(0.0, a + b * max(0.0, HEATING_BASE - t))
+
+    if temp is not None:
+        lines.append(f"Arvio päivälle, jonka keskilämpötila on {float(temp):.1f} °C: noin {pred(float(temp)):.1f} kWh")
+    if fc:
+        lines.append("Ennuste tuleville päiville (keskilämpötila → arvioitu kulutus):")
+        total = 0.0
+        for d, v in fc.items():
+            total += pred(v[0])
+            lines.append(f"{fi_day(d)}: {v[0]:.1f} °C → {pred(v[0]):.1f} kWh")
+        lines.append(f"Yhteensä {len(fc)} pv: noin {total:.0f} kWh")
+    return "\n".join(lines)
+
+
+async def weather_daily() -> None:
+    """Päivittää ulkolämpötilat kerran päivässä (klo 8.40) ja 5 min käynnistyksen jälkeen."""
+    await asyncio.sleep(300)
+    while True:
+        try:
+            await weather_update(400 if not temp_stored() else 14)
+            log.info("Ulkolämpötilat päivitetty (%s)", FMI_PLACE)
+        except Exception as e:  # ei saa kaataa agenttia
+            log.warning("Ulkolämpötilojen päivitys epäonnistui: %s", e)
+        now = datetime.now(TZ)
+        nxt = now.replace(hour=8, minute=40, second=0, microsecond=0)
+        if nxt <= now:
+            nxt += timedelta(days=1)
+        await asyncio.sleep((nxt - now).total_seconds())
+
+
 async def ha_ws(message: dict) -> dict:
     """Yksi kysely Home Assistantin websocket-rajapintaan (tilastot eivät ole REST-rajapinnassa)."""
     import websockets  # vain tarvittaessa
@@ -2154,6 +2389,12 @@ async def run_tool(name: str, args: dict) -> str | list:
 
         if name == "energia_paivita":
             return await energy_update(int(args.get("paivia") or 40))
+
+        if name == "saa_lampotilat":
+            return await weather_report(int(args.get("paivia") or 14), args.get("ennuste", True) is not False)
+
+        if name == "energia_arvio":
+            return await energy_estimate(int(args.get("paivia") or 120), args.get("lampotila"))
 
         if name == "ha_historia":
             return await ha_history(args["entity_id"], args["alku"], args.get("loppu"))
@@ -2702,6 +2943,7 @@ async def main() -> None:
     if SK_ENABLED:
         asyncio.create_task(sk_start_browser())
         asyncio.create_task(energy_daily())
+        asyncio.create_task(weather_daily())
 
     async def shutdown() -> None:
         log.info("Lisäosa sammuu, suljetaan selain hallitusti")

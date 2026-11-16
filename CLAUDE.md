@@ -27,6 +27,9 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 - Sähkönkulutus: `energy_update` kirjautuu EnergiaOnlineen (asetukset `energia_*`) lisäosan selaimessa, muuttaa sivun
   oman kulutuspyynnön aikavälin (`page.route`) ja tuo päiväarvot tilastoon `whatsapp_agent:sahkonkulutus`
   (`recorder/import_statistics`), kerran päivässä. Salasana peitetään selaimen näkymistä.
+- Ulkolämpötila: Ilmatieteen laitoksen avoin data (`opendata.fmi.fi`, ei avainta, asetus `saa_paikka`), päivän
+  keski/min/max tilastoon `whatsapp_agent:ulkolampotila` ja `/data/lampotila.json`; ennuste ~10 pv. `energia_arvio`
+  sovittaa kWh = perus + kerroin × max(0, 17 °C − T) ja ennustaa kulutuksen. Sisälämpötilat HA:n antureista.
 - Tiedostot: `/share/agent` (reseptit/, asetukset/, ruokalistat/, saapuneet/, ostokset/).
 - Keskusteluhistoria: `/data/historia/` (säilyy uudelleenkäynnistyksissä ja päivityksissä). Lyhennys koon mukaan
   (`MAX_HISTORY_CHARS`): ensin vanhojen vuorojen työvaiheet tiivistetään, vasta sitten vanhimmat vuorot pois.
