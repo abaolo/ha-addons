@@ -3,11 +3,13 @@ Kuuntelee vain kontin sisällä (127.0.0.1:7682); nginx välittää /api/-polun 
 import json
 import re
 import subprocess
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TARGET = "claude"  # tmux-istunnon aktiivinen ikkuna
 RC_WINDOW = "claude:etaohjaus"
-KEYS = {"Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "C-c", "C-d", "BSpace", "Space"}
+KEYS = {"y", "n", "Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "C-c", "C-d", "BSpace", "Space"}
 URL_RE = re.compile(r"https?://[^\s<>\"'`]+")
 
 
@@ -72,5 +74,22 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def confirm_remote_control() -> None:
+    """Asetus etaohjaus on käyttäjän suostumus: vastataan etäohjauksen käyttöönottokysymykseen "y".
+    Muihin kysymyksiin ei vastata automaattisesti (Etäohjaus-näkymän painikkeet)."""
+    while True:
+        time.sleep(3)
+        try:
+            if "etaohjaus" not in tmux("list-windows", "-t", "claude", "-F", "#{window_name}").split():
+                continue
+            tail = tmux("capture-pane", "-p", "-t", RC_WINDOW).rstrip().splitlines()[-3:]
+            if any("Enable Remote Control? (y/n)" in line for line in tail):
+                tmux("send-keys", "-t", RC_WINDOW, "y", "Enter")
+                time.sleep(10)
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
+    threading.Thread(target=confirm_remote_control, daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", 7682), Handler).serve_forever()
