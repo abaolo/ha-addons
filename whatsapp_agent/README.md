@@ -151,7 +151,7 @@ tunnistettavaksi; ääniviestiä ei tallenneta, kun tunnistus onnistuu.
 (asetukset `energia_sahkoposti`, `energia_salasana`; `skaupat_selain` päälle) ja tuo kulutuksen Home Assistantin
 tilastoon `whatsapp_agent:sahkonkulutus` kerran päivässä (klo 8.30). Tilaston voi lisätä Energia-näkymään
 (Asetukset → Kojelaudat → Energia → Sähköverkko → Lisää kulutus). EnergiaOnlinen sivu hakee kulutuksen omalla
-kirjautumisellaan; agentti muuttaa vain aikavälin. Tiedot tulevat 6–24 tunnin viiveellä, ja epävirallinen tapa
+kirjautumisellaan; agentti muuttaa vain aikavälin. Lisäksi agentti hakee viimeisen kuukauden vartti- tai tuntitiedot (asetus `energia_tunnit`, oletus päällä): tilasto on niiltä päiviltä tunneittain, ja `energia_tunnit` laskee yö- ja päiväosuuden, kulutuksen kellonajoittain ja suurimmat tunnit. Tuntitiedot kertyvät `/data/energia_tunnit.json`-tiedostoon vuoden ajalta. Asetus `energia_tarkkuus` ei ole enää käytössä. Tiedot tulevat 6–24 tunnin viiveellä, ja epävirallinen tapa
 voi lakata toimimasta, jos sivusto muuttuu. Kuvavarmennetta agentti ei ohita.
 
 Agentti lukee myös Home Assistantin historiaa (`ha_historia`) ja pitkäaikaisia tilastoja (`ha_tilastot`).

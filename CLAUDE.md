@@ -26,7 +26,8 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
   asetuksista paikkamerkeillä {NIMI} {PUHELIN} {SAHKOPOSTI}.
 - Sähkönkulutus: `energy_update` kirjautuu EnergiaOnlineen (asetukset `energia_*`) lisäosan selaimessa, muuttaa sivun
   oman kulutuspyynnön aikavälin (`page.route`) ja tuo päiväarvot tilastoon `whatsapp_agent:sahkonkulutus`
-  (`recorder/import_statistics`), kerran päivässä. Salasana peitetään selaimen näkymistä.
+  (`recorder/import_statistics`), kerran päivässä. Salasana peitetään selaimen näkymistä. Lisäksi PT15M/PT1H
+  viimeiset 31 pv → `/data/energia_tunnit.json` (UTC-tuntiavaimet), tilasto tunneittain täysiltä päiviltä, `energia_tunnit`.
 - Ulkolämpötila: Ilmatieteen laitoksen avoin data (`opendata.fmi.fi`, ei avainta, asetus `saa_paikka`, oletus `koti` = HA:n `zone.home`), päivän
   keski/min/max tunneittaisesta t2m:stä (koordinaateilla havainnot bbox-alueelta, ennuste latlon; lähin asema; UTC-palat 144 h, puolitus "Too long" -virheellä) tilastoon `whatsapp_agent:ulkolampotila` ja `/data/lampotila.json`; ennuste ~10 pv. `energia_arvio`
   sovittaa kWh = perus + kerroin × max(0, 17 °C − T) ja ennustaa kulutuksen. Sisälämpötilat HA:n antureista.

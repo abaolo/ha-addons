@@ -84,7 +84,8 @@ turn_no: dict[str, int] = {}  # käyttäjän viestien laskuri keskusteluittain (
 # EnergiaOnline (Turku Energia): kirjautumistunnukset asetuksista; koodi syöttää ne, malli ei näe niitä.
 EO_EMAIL = (OPTIONS.get("energia_sahkoposti") or "").strip()
 EO_PASSWORD = OPTIONS.get("energia_salasana") or ""
-EO_RESOLUTION = (OPTIONS.get("energia_tarkkuus") or "P1D").strip()
+EO_FINE = OPTIONS.get("energia_tunnit", True) is not False  # tunti-/varttitiedot viimeiseltä kuukaudelta
+EO_FINE_DAYS = 31
 PERSONAL = {"{NIMI}": (OPTIONS.get("varaus_nimi") or "").strip(),
             "{PUHELIN}": (OPTIONS.get("varaus_puhelin") or "").strip(),
             "{SAHKOPOSTI}": (OPTIONS.get("varaus_sahkoposti") or "").strip()}
@@ -589,9 +590,20 @@ TOOLS = [
     {
         "name": "energia_paivita",
         "description": "Hakee sähkönkulutuksen Turku Energian EnergiaOnlinesta (kirjautuu itse asetusten tunnuksilla) ja "
-        "tuo sen Home Assistantin tilastoon whatsapp_agent:sahkonkulutus. Päivittyy myös automaattisesti kerran päivässä.",
+        "tuo sen Home Assistantin tilastoon whatsapp_agent:sahkonkulutus: päivittäin pyydetyltä ajalta ja tunneittain "
+        "viimeiseltä kuukaudelta. Päivittyy myös automaattisesti kerran päivässä.",
         "input_schema": {"type": "object", "properties": {
             "paivia": {"type": "integer", "description": "Montako päivää taaksepäin haetaan (oletus 40, enintään 400)"}}},
+    },
+    {
+        "name": "energia_tunnit",
+        "description": "Sähkönkulutus tunneittain (EnergiaOnlinen vartti-/tuntitiedot, viimeinen kuukausi, säilyy "
+        "vuoden): yö- ja päiväosuus, keskikulutus kellonajoittain, arki vs. viikonloppu ja suurimmat tunnit. "
+        "Laskee koodissa; käytä tätä yösähkö- ja kellonaikakysymyksiin.",
+        "input_schema": {"type": "object", "properties": {
+            "paivia": {"type": "integer", "description": "Montako päivää taaksepäin (oletus 30)"},
+            "yo_alku": {"type": "integer", "description": "Yön alku, tunti (oletus 22)"},
+            "yo_loppu": {"type": "integer", "description": "Yön loppu, tunti (oletus 7)"}}},
     },
     {
         "name": "saa_lampotilat",
@@ -1760,6 +1772,7 @@ async def ha_history(entity_id: str, start: str, end: str | None) -> str:
 EO_URL = "https://www.energiaonline.fi/"
 EO_API_MATCH = "GetConsumptionAndProductionData"
 EO_STATE = Path("/data/energia.json")  # päiväkohtaiset kWh-arvot
+EO_HOURS = Path("/data/energia_tunnit.json")  # {"2026-11-15T20:00:00Z": kWh} tunnin alku UTC-aikana
 ENERGY_STAT_ID = "whatsapp_agent:sahkonkulutus"
 energy_lock = asyncio.Lock()
 
@@ -1876,22 +1889,43 @@ async def eo_login(page) -> None:
 
 def eo_parse(payload: dict) -> dict[str, float]:
     """Mitatun kulutuksen kWh-arvot päivittäin (Suomen aikaa). Puuttuvia arvoja ei muuteta nolliksi."""
+    days: dict[str, float] = {}
+    for when, value in eo_points(payload):
+        day = when.astimezone(TZ).date().isoformat()
+        days[day] = round(days.get(day, 0.0) + value, 6)
+    return days
+
+
+def eo_hours(points: list[tuple[datetime, float]]) -> dict[str, float]:
+    """Vartti- tai tuntiarvot tunneittain, avaimena tunnin alku UTC-aikana."""
+    utc = ZoneInfo("UTC")
+    hours: dict[str, float] = {}
+    for when, value in points:
+        key = when.astimezone(utc).replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+        hours[key] = round(hours.get(key, 0.0) + value, 6)
+    return hours
+
+
+def eo_points(payload: dict) -> list[tuple[datetime, float]]:
+    """Mitatun kulutuksen (aika, kWh) -parit vastauksen tarkkuudella."""
     main = payload.get("mainData") or {}
     series = [s for s in main.get("consumptionAndProductionDataList") or []
               if s.get("chartDataType") == "ConsumptionMeasured" and str(s.get("unit", "")).lower() == "kwh"]
     if not series:
         raise EnergyError("EnergiaOnlinen vastauksessa ei ollut mitattua kulutusta.")
-    days: dict[str, float] = {}
+    points = []
     for stamp, datum in zip(main.get("timeSteps") or [], series[0].get("dataValues") or []):
         value = datum[0] if isinstance(datum, list) and datum else datum
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
             continue
-        day = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(TZ).date().isoformat()
-        days[day] = round(days.get(day, 0.0) + float(value), 6)
-    return days
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=TZ)
+        points.append((when, float(value)))
+    return points
 
 
-async def energy_fetch(days_back: int) -> dict[str, float]:
+async def energy_fetch(days_back: int, resolution: str = "P1D") -> list[tuple[datetime, float]]:
     await sk_browser()  # lisäosan selain (asetus skaupat_selain)
     page = _skb.get("eo")
     if page is None or page.is_closed():
@@ -1906,7 +1940,7 @@ async def energy_fetch(days_back: int) -> dict[str, float]:
             try:
                 body = json.loads(req.post_data)
                 body["range"] = {"from": start, "to": end}
-                body["consumptionAndProductionResolution"] = EO_RESOLUTION
+                body["consumptionAndProductionResolution"] = resolution
                 await route.continue_(post_data=json.dumps(body))
                 return
             except (ValueError, TypeError):
@@ -1945,16 +1979,31 @@ async def energy_fetch(days_back: int) -> dict[str, float]:
         raise EnergyError("EnergiaOnline hylkäsi haun: kirjautuminen ei onnistunut.")
     if status >= 400 or not isinstance(data, dict):
         raise EnergyError(f"EnergiaOnline vastasi virheellä ({status}).")
-    return eo_parse(data)
+    return eo_points(data)
 
 
-async def energy_import(days: dict[str, float]) -> None:
-    """Tuo päiväkulutukset Home Assistantin ulkoiseen tilastoon (näkyy Energia-näkymässä)."""
+def energy_series(days: dict[str, float], hours: dict[str, float]) -> list[tuple[datetime, float]]:
+    """Tilaston pisteet: tunneittain niiltä päiviltä, joilta tuntitiedot ovat täydet, muuten päivä klo 0.00."""
+    by_day: dict[str, list[tuple[datetime, float]]] = {}
+    for key, value in hours.items():
+        when = datetime.fromisoformat(key.replace("Z", "+00:00"))
+        by_day.setdefault(when.astimezone(TZ).date().isoformat(), []).append((when, value))
+    points = []
+    for day in sorted(set(days) | set(by_day)):
+        hs = by_day.get(day, [])
+        if len(hs) >= 23:
+            points += hs
+        elif day in days:
+            points.append((datetime.fromisoformat(day).replace(tzinfo=TZ), days[day]))
+    return sorted(points)
+
+
+async def energy_import(days: dict[str, float], hours: dict[str, float] | None = None) -> None:
+    """Tuo kulutuksen Home Assistantin ulkoiseen tilastoon (näkyy Energia-näkymässä); tunneittain, kun mahdollista."""
     total, stats = 0.0, []
-    for day in sorted(days):
-        total = round(total + days[day], 6)
-        start = datetime.fromisoformat(day).replace(tzinfo=TZ)
-        stats.append({"start": start.isoformat(), "state": total, "sum": total})
+    for when, value in energy_series(days, hours or {}):
+        total = round(total + value, 6)
+        stats.append({"start": when.isoformat(), "state": total, "sum": total})
     base = {"has_sum": True, "name": "Sähkönkulutus (EnergiaOnline)", "source": "whatsapp_agent",
             "statistic_id": ENERGY_STAT_ID, "unit_of_measurement": "kWh"}
     variants = [{**base, "mean_type": 0, "unit_class": "energy"}, {**base, "mean_type": 0}, {**base, "has_mean": False}]
@@ -1968,11 +2017,42 @@ async def energy_import(days: dict[str, float]) -> None:
     raise EnergyError(f"Tilaston tuonti Home Assistantiin epäonnistui: {last_error}")
 
 
+def energy_hours_stored() -> dict[str, float]:
+    try:
+        return json.loads(EO_HOURS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+async def energy_fetch_fine(days_back: int) -> tuple[dict[str, float], str]:
+    """Vartti- (PT15M) tai tuntitiedot (PT1H). Palauttaa (tunnit, tarkkuus tai virheselitys)."""
+    reasons = []
+    for resolution in ("PT15M", "PT1H"):
+        try:
+            points = await energy_fetch(days_back, resolution)
+        except EnergyError as e:
+            reasons.append(f"{resolution}: {e}")
+            continue
+        gaps = sorted((b[0] - a[0]).total_seconds() for a, b in zip(points, points[1:]))
+        if not gaps or gaps[len(gaps) // 2] > 3600:  # sivu ohitti tarkkuuspyynnön ja palautti päiväarvot
+            reasons.append(f"{resolution}: EnergiaOnline palautti vain päiväarvoja")
+            continue
+        hours = eo_hours(points)
+        if hours:
+            return hours, resolution
+        reasons.append(f"{resolution}: ei arvoja")
+    return {}, "; ".join(reasons)
+
+
 async def energy_update(days_back: int = 40) -> str:
     days_back = max(1, min(days_back, 400))
     async with energy_lock:
         try:
-            new = await energy_fetch(days_back)
+            new: dict[str, float] = {}
+            for when, value in await energy_fetch(days_back):
+                day = when.astimezone(TZ).date().isoformat()
+                new[day] = round(new.get(day, 0.0) + value, 6)
+            fine, fine_info = (await energy_fetch_fine(min(days_back, EO_FINE_DAYS))) if EO_FINE else ({}, "pois päältä")
         except EnergyError as e:
             return str(e)
         except SKaupatError:
@@ -1983,15 +2063,59 @@ async def energy_update(days_back: int = 40) -> str:
             stored = {}
         stored.update(new)
         EO_STATE.write_text(json.dumps(stored))
+        hours = energy_hours_stored()
+        hours.update(fine)
+        cutoff = (datetime.now(ZoneInfo("UTC")) - timedelta(days=400)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        hours = {k: v for k, v in sorted(hours.items()) if k >= cutoff}
+        EO_HOURS.write_text(json.dumps(hours))
         try:
-            await energy_import(stored)
+            await energy_import(stored, hours)
         except EnergyError as e:
             return str(e)
     recent = sorted(new)[-7:]
     lines = [f"{datetime.fromisoformat(d):%d.%m.}: {new[d]:.2f} kWh" for d in recent]
     log.info("Sähkönkulutus päivitetty: %d päivää", len(new))
+    fine_line = (f"Tuntitiedot: {len(fine)} tuntia viimeiseltä {min(days_back, EO_FINE_DAYS)} päivältä "
+                 f"(EnergiaOnlinen tarkkuus {fine_info}); yö/päivä-erittely työkalulla energia_tunnit."
+                 if fine else f"Tuntitietoja ei saatu ({fine_info}).")
     return (f"Haettu {len(new)} päivän kulutus (tilasto {ENERGY_STAT_ID}). Viimeiset päivät:\n" + "\n".join(lines)
-            + "\nHuom: EnergiaOnlinen tiedot tulevat 6–24 tunnin viiveellä.")
+            + "\n" + fine_line + "\nHuom: EnergiaOnlinen tiedot tulevat 6–24 tunnin viiveellä.")
+
+
+async def energy_hours_report(days_back: int, night_start: int, night_end: int) -> str:
+    hours = energy_hours_stored()
+    if not hours:
+        return "Tuntitietoja ei ole vielä. Aja energia_paivita (hakee viimeisen kuukauden tunti-/varttitiedot)."
+    first = (datetime.now(TZ) - timedelta(days=max(1, min(days_back, 400)))).replace(hour=0, minute=0, second=0)
+    local = [(datetime.fromisoformat(k.replace("Z", "+00:00")).astimezone(TZ), v) for k, v in hours.items()]
+    local = [(w, v) for w, v in local if w >= first]
+    if not local:
+        return "Valitulta ajalta ei ole tuntitietoja."
+
+    def is_night(h: int) -> bool:
+        return h >= night_start or h < night_end if night_start > night_end else night_start <= h < night_end
+
+    total = sum(v for _, v in local)
+    night = sum(v for w, v in local if is_night(w.hour))
+    days = sorted({w.date() for w, _ in local})
+    by_hour: dict[int, list[float]] = {}
+    per_day: dict = {}
+    for w, v in local:
+        by_hour.setdefault(w.hour, []).append(v)
+        per_day[w.date()] = per_day.get(w.date(), 0.0) + v
+    weekday = [v for d, v in per_day.items() if d.weekday() < 5]
+    weekend = [v for d, v in per_day.items() if d.weekday() >= 5]
+    lines = [f"Tuntikulutus {days[0]:%d.%m.}–{days[-1]:%d.%m.} ({len(days)} pv, {len(local)} tuntia), yhteensä {total:.1f} kWh.",
+             f"Yö {night_start:02d}–{night_end:02d}: {night:.1f} kWh ({100 * night / total:.0f} %), "
+             f"päivä: {total - night:.1f} kWh ({100 * (total - night) / total:.0f} %)." if total else "Kulutus 0 kWh."]
+    if weekday and weekend:
+        lines.append(f"Keskimäärin arkipäivä {sum(weekday) / len(weekday):.1f} kWh, viikonloppupäivä "
+                     f"{sum(weekend) / len(weekend):.1f} kWh.")
+    lines.append("Keskikulutus kellonajoittain (kWh/h):")
+    lines.append(", ".join(f"{h:02d}: {sum(vs) / len(vs):.2f}" for h, vs in sorted(by_hour.items())))
+    top = sorted(local, key=lambda x: -x[1])[:5]
+    lines.append("Suurimmat tunnit: " + ", ".join(f"{fi_day(w.date().isoformat())} klo {w:%H} {v:.2f} kWh" for w, v in top))
+    return "\n".join(lines)
 
 
 async def energy_daily() -> None:
@@ -2525,6 +2649,10 @@ async def run_tool(name: str, args: dict) -> str | list:
 
         if name == "energia_paivita":
             return await energy_update(int(args.get("paivia") or 40))
+
+        if name == "energia_tunnit":
+            return await energy_hours_report(int(args.get("paivia") or 30), int(args.get("yo_alku", 22)),
+                                             int(args.get("yo_loppu", 7)))
 
         if name == "saa_lampotilat":
             return await weather_report(int(args.get("paivia") or 14), args.get("ennuste", True) is not False)
