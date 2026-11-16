@@ -1763,7 +1763,7 @@ async def eo_find(page, selectors: str):
 
 EO_COOKIE_BUTTONS = ("button:has-text('Hyväksy'), button:has-text('Salli kaikki'), button:has-text('Accept'), "
                      "button:has-text('Hyväksy kaikki'), button:has-text('Sallin')")
-EO_SUBMIT_BUTTONS = ("button[type=submit], input[type=submit], button:has-text('Kirjaudu'), button:has-text('Jatka'), "
+EO_SUBMIT_BUTTONS = ("#next, button:has-text('Kirjaudu sisään'), button[type=submit], input[type=submit], button:has-text('Kirjaudu'), button:has-text('Jatka'), "
                      "button:has-text('Seuraava'), button:has-text('Sign in'), button:has-text('Log in'), "
                      "button:has-text('Continue'), button:has-text('Next')")
 
@@ -1812,8 +1812,10 @@ async def eo_report_failure(page, reason: str) -> str:
 
 async def eo_login(page) -> None:
     """Kirjautuu, jos sivu pyytää. Tukee yhdellä ja kahdella sivulla tehtävää kirjautumista."""
-    email_sel = ("input[type=email], input[autocomplete=username], input[name*=mail i], input[id*=mail i], "
-                 "input[name*=user i], input[id*=user i], input[name*=login i]")
+    # Turku Energia käyttää Azure AD B2C -kirjautumista: sähköpostikenttä #signInName, painike #next.
+    email_sel = ("#signInName, input[type=email], input[autocomplete=username], input[name*=mail i], "
+                 "input[id*=mail i], input[name*=posti i], input[id*=signin i], input[name*=user i], "
+                 "input[id*=user i], input[name*=login i]")
     for _ in range(4):  # kirjautumislinkki -> sähköposti -> salasana (kaksivaiheinen kirjautuminen)
         await page.wait_for_timeout(1500)
         cookie = await eo_find(page, EO_COOKIE_BUTTONS)
@@ -1826,6 +1828,8 @@ async def eo_login(page) -> None:
                 page, "Kirjautumissivulla on kuvavarmenne. Kirjaudu kerran itse Kotiapuri-selainpaneelissa."))
         pw = await eo_find(page, "input[type=password]")
         email = await eo_find(page, email_sel)
+        if email is None and pw is not None:  # tunnistamaton sähköpostikenttä: salasanaa edeltävä tekstikenttä
+            email = await eo_find(page, "input[type=text]:not([type=hidden])")
         if pw is None and email is None:
             if _ == 0:  # kirjautumislinkki etusivulla?
                 link = await eo_find(page, "a:has-text('Kirjaudu'), button:has-text('Kirjaudu'), a:has-text('Log in')")
