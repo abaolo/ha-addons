@@ -1761,15 +1761,69 @@ async def eo_find(page, selectors: str):
     return None
 
 
+EO_COOKIE_BUTTONS = ("button:has-text('Hyväksy'), button:has-text('Salli kaikki'), button:has-text('Accept'), "
+                     "button:has-text('Hyväksy kaikki'), button:has-text('Sallin')")
+EO_SUBMIT_BUTTONS = ("button[type=submit], input[type=submit], button:has-text('Kirjaudu'), button:has-text('Jatka'), "
+                     "button:has-text('Seuraava'), button:has-text('Sign in'), button:has-text('Log in'), "
+                     "button:has-text('Continue'), button:has-text('Next')")
+
+
+async def eo_submit(page, field) -> None:
+    """Lähettää lomakkeen painikkeella (Enter vain varalla) ja odottaa sivun rauhoittumista."""
+    button = await eo_find(page, EO_SUBMIT_BUTTONS)
+    if button is not None:
+        await button.click()
+    else:
+        await field.press("Enter")
+    try:
+        await page.wait_for_load_state("networkidle", timeout=20_000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(2000)
+
+
+async def eo_page_error(page) -> str:
+    """Sivun näkyvä virheilmoitus (esim. 'väärä salasana'), jotta käyttäjä näkee syyn."""
+    loc = await eo_find(page, "[role=alert], .error, .error-message, .alert, [class*=error i], [id*=error i]")
+    if loc is None:
+        return ""
+    try:
+        return " ".join((await loc.inner_text()).split())[:200]
+    except Exception:
+        return ""
+
+
+async def eo_report_failure(page, reason: str) -> str:
+    """Kuvakaappaus WhatsAppiin ja sivun virheteksti mukaan, jotta vian syy selviää."""
+    detail = await eo_page_error(page)
+    host = page.url.split("?")[0]
+    log.warning("EnergiaOnline: %s (%s) %s", reason, host, detail)
+    try:
+        folder = safe_path("selain")
+        folder.mkdir(parents=True, exist_ok=True)
+        rel = f"selain/energia-{datetime.now(TZ):%Y%m%d-%H%M%S}.png"
+        await page.screenshot(path=str(safe_path(rel)))
+        if current_chat.get() is not None:
+            await send_image_to_chat(rel, f"EnergiaOnline: {reason}")
+    except Exception:
+        log.exception("Kuvakaappaus epäonnistui")
+    return f"{reason}" + (f" Sivulla luki: \"{detail}\"." if detail else "") + f" Sivu: {host}"
+
+
 async def eo_login(page) -> None:
     """Kirjautuu, jos sivu pyytää. Tukee yhdellä ja kahdella sivulla tehtävää kirjautumista."""
     email_sel = ("input[type=email], input[autocomplete=username], input[name*=mail i], input[id*=mail i], "
                  "input[name*=user i], input[id*=user i], input[name*=login i]")
     for _ in range(4):  # kirjautumislinkki -> sähköposti -> salasana (kaksivaiheinen kirjautuminen)
         await page.wait_for_timeout(1500)
+        cookie = await eo_find(page, EO_COOKIE_BUTTONS)
+        if cookie is not None:
+            await cookie.click()
+            await page.wait_for_timeout(800)
         text = await page.locator("body").inner_text()
         if WEB_CHECK.search(text):
-            raise EnergyError("Kirjautumissivulla on kuvavarmenne. Kirjaudu kerran itse Kotiapuri-selainpaneelissa.")
+            raise EnergyError(await eo_report_failure(
+                page, "Kirjautumissivulla on kuvavarmenne. Kirjaudu kerran itse Kotiapuri-selainpaneelissa."))
         pw = await eo_find(page, "input[type=password]")
         email = await eo_find(page, email_sel)
         if pw is None and email is None:
@@ -1786,18 +1840,13 @@ async def eo_login(page) -> None:
         if email is not None:
             await email.fill(EO_EMAIL)
         if pw is None:
-            await email.press("Enter")  # kaksivaiheinen kirjautuminen
-            await page.wait_for_load_state("domcontentloaded")
+            await eo_submit(page, email)  # kaksivaiheinen kirjautuminen
             continue
         await pw.fill(EO_PASSWORD)
-        await pw.press("Enter")
-        try:
-            await page.wait_for_load_state("networkidle", timeout=20_000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(2000)
+        await eo_submit(page, pw)
         if await eo_find(page, "input[type=password]") is not None:
-            raise EnergyError("Kirjautuminen epäonnistui: tarkista energia_sahkoposti ja energia_salasana.")
+            raise EnergyError(await eo_report_failure(
+                page, "Kirjautuminen ei mennyt läpi (salasanakenttä on yhä näkyvissä)."))
         return
 
 
@@ -1863,7 +1912,8 @@ async def energy_fetch(days_back: int) -> dict[str, float]:
                 else:
                     await page.reload(wait_until="domcontentloaded")
         else:
-            raise EnergyError("EnergiaOnline ei hakenut kulutustietoja (sivu on ehkä muuttunut). Katso Kotiapuri-selainpaneelia.")
+            raise EnergyError(await eo_report_failure(
+                page, "Kirjautuminen onnistui, mutta EnergiaOnline ei hakenut kulutustietoja (sivu on ehkä muuttunut)."))
     finally:
         page.remove_listener("response", on_response)
         await page.unroute(f"**/*{EO_API_MATCH}*")
