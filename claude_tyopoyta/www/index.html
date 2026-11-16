@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="fi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude-työpöytä</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #e1e1e1; font-family: sans-serif; }
+  body { display: flex; flex-direction: column; }
+  nav { display: flex; gap: 8px; padding: 6px 8px; background: #1c1c1c; align-items: center; }
+  button { background: #2a2a2a; color: #e1e1e1; border: 1px solid #444; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 14px; }
+  button.on { background: #3b5bdb; border-color: #3b5bdb; }
+  nav span { margin-left: auto; font-size: 12px; color: #999; }
+  iframe { flex: 1; border: 0; width: 100%; display: none; background: #000; }
+  iframe.on { display: block; }
+</style>
+</head>
+<body>
+<nav>
+  <button id="b-term" class="on" onclick="show('term')">Pääte</button>
+  <button id="b-vnc" onclick="show('vnc')">Selain</button>
+  <span>Kuvavarmenteet ja kirjautumiset: Selain-välilehti</span>
+</nav>
+<iframe id="term" class="on" src="terminal/"></iframe>
+<iframe id="vnc" src="vnc/"></iframe>
+<script>
+  function show(id) {
+    for (const x of ["term", "vnc"]) {
+      document.getElementById(x).classList.toggle("on", x === id);
+      document.getElementById("b-" + x).classList.toggle("on", x === id);
+    }
+    try { localStorage.setItem("valilehti", id); } catch (e) {}
+  }
+  try { const v = localStorage.getItem("valilehti"); if (v) show(v); } catch (e) {}
+</script>
+</body>
+</html>

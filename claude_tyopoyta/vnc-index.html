@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="fi">
+<head><meta charset="utf-8"><title>Selain</title></head>
+<body>
+<p>Avataan selainta…</p>
+<script>
+  // Paneeli on polun /api/hassio_ingress/<tunnus>/vnc/ alla: websocket-polku suhteessa tähän sivuun.
+  const base = location.pathname.replace(/[^/]*$/, "");
+  const path = (base + "websockify").replace(/^\//, "");
+  location.replace(base + "vnc.html?autoconnect=1&reconnect=1&resize=scale&path=" + encodeURIComponent(path));
+</script>
+</body>
+</html>

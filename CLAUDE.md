@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Home Assistant -lisäosarepositorio (`repository.yaml` + lisäosakansiot, nyt `whatsapp_agent/`).
+Home Assistant -lisäosarepositorio (`repository.yaml` + lisäosakansiot `whatsapp_agent/`, `claude_tyopoyta/`).
 Home Assistant lukee repon `main`-haarasta. Lisäosat näkyvät HA:ssa kohdassa *Apps*.
 Repo on julkinen: älä lisää tänne mitään yksityistä.
 
@@ -37,9 +37,18 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
   Prompt caching (`cache_control` ylätasolla, ttl 1h) pitää historian kulut kurissa. Mainitsemattomat ryhmäviestit
   ohittavat ensin halvan vahdin (`gate_says_for_agent`, Haiku, ei historiaa); vasta sitten päämalli.
 
+## Claude-työpöytä (`claude_tyopoyta/`)
+
+- Docker `node:22-bookworm-slim`: Claude Code (npm), `@playwright/mcp` (`playwright-mcp --cdp-endpoint`), Chromium
+  Xvfb:llä (CDP 9222 vain kontissa), x11vnc + websockify (6081), ttyd 1.7.7 (GitHub-julkaisu, sha256) + tmux (7681),
+  nginx yhdistää ingressiin 8099 (`/vnc/`, `/terminal/`, sallittu vain 172.30.32.2).
+- Ei `homeassistant_api`/`hassio_api`/`share`: vain `addon_config` (`/config` = työkansio, `CLAUDE.md` ja `.mcp.json`
+  kopioidaan jos puuttuvat) ja `/data` (HOME, Chromium-profiili). Asetus `etaohjaus` → `claude remote-control`.
+- Agentti ei ohita kuvavarmenteita: käyttäjä hoitaa ne paneelissa.
+
 ## Säännöt
 
-- Aina kun muutat `whatsapp_agent/`-kansion tiedostoja: nosta `whatsapp_agent/config.yaml`:n `version`-kentän
+- Aina kun muutat lisäosan kansion tiedostoja: nosta sen `config.yaml`:n `version`-kentän
   patch-numeroa, aja `python -m py_compile whatsapp_agent/agent.py`, commit ja push. Ilman versionnostoa
   Home Assistant ei näe päivitystä. Päivitys näkyy HA:ssa vasta, kun muutos on `main`-haarassa.
 - Älä koskaan lisää koodiin API-avaimia, puhelinnumeroita tai muita salaisuuksia. Ne kuuluvat lisäosan asetuksiin.
