@@ -147,11 +147,15 @@ tunnistettavaksi; ääniviestiä ei tallenneta, kun tunnistus onnistuu.
 
 ## Sähkönkulutus ja historia
 
-Agentti lukee Home Assistantin historiaa (`ha_historia`) ja pitkäaikaisia tilastoja (`ha_tilastot`), esim.
-Energia-näkymän sähkönkulutuksen päivittäin, viikoittain tai kuukausittain. Turku Energian kulutustiedot saa
-Home Assistantiin epävirallisella HACS-integraatiolla
-[artepe/turku-energia-haos](https://github.com/artepe/turku-energia-haos) (beta, tiedot 6–24 h viiveellä).
-Kysy esim. *"Paljonko sähköä kului tässä kuussa verrattuna viime kuuhun?"*
+**Turku Energia (EnergiaOnline):** agentti kirjautuu EnergiaOnlineen lisäosan selaimessa omilla tunnuksillasi
+(asetukset `energia_sahkoposti`, `energia_salasana`; `skaupat_selain` päälle) ja tuo kulutuksen Home Assistantin
+tilastoon `whatsapp_agent:sahkonkulutus` kerran päivässä (klo 8.30). Tilaston voi lisätä Energia-näkymään
+(Asetukset → Kojelaudat → Energia → Sähköverkko → Lisää kulutus). EnergiaOnlinen sivu hakee kulutuksen omalla
+kirjautumisellaan; agentti muuttaa vain aikavälin. Tiedot tulevat 6–24 tunnin viiveellä, ja epävirallinen tapa
+voi lakata toimimasta, jos sivusto muuttuu. Kuvavarmennetta agentti ei ohita.
+
+Agentti lukee myös Home Assistantin historiaa (`ha_historia`) ja pitkäaikaisia tilastoja (`ha_tilastot`).
+Kysy esim. *"Paljonko sähköä kului tässä kuussa verrattuna viime kuuhun?"* tai *"päivitä sähkönkulutus"*.
 
 ## Muisti
 

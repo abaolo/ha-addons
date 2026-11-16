@@ -13,7 +13,7 @@ import os
 import re
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from urllib.parse import quote
 from pathlib import Path
@@ -81,6 +81,10 @@ current_chat: contextvars.ContextVar = contextvars.ContextVar("current_chat", de
 current_key: contextvars.ContextVar = contextvars.ContextVar("current_key", default="")  # historian avain
 turn_no: dict[str, int] = {}  # käyttäjän viestien laskuri keskusteluittain (vahvistusten tarkistukseen)
 # Varauslomakkeiden yhteystiedot asetuksista; agentti kirjoittaa paikkamerkit, työkalu korvaa ne.
+# EnergiaOnline (Turku Energia): kirjautumistunnukset asetuksista; koodi syöttää ne, malli ei näe niitä.
+EO_EMAIL = (OPTIONS.get("energia_sahkoposti") or "").strip()
+EO_PASSWORD = OPTIONS.get("energia_salasana") or ""
+EO_RESOLUTION = (OPTIONS.get("energia_tarkkuus") or "P1D").strip()
 PERSONAL = {"{NIMI}": (OPTIONS.get("varaus_nimi") or "").strip(),
             "{PUHELIN}": (OPTIONS.get("varaus_puhelin") or "").strip(),
             "{SAHKOPOSTI}": (OPTIONS.get("varaus_sahkoposti") or "").strip()}
@@ -145,7 +149,8 @@ def system_prompt() -> str:
         "kirjautuminen, pyydä käyttäjää hoitamaan se Home Assistantin selainpaneelissa ja jatka sen jälkeen. "
         "Onnistuneen varauksen jälkeen lisää se kalenteriin asetukset/kalenteri.md:n sääntöjen mukaan "
         "(väri, nimi, muistutus) ja kerro varauksen tiedot lyhyesti.\n"
-        "Energia: sähkönkulutuksen ja muiden mittausten historian saat ha_tilastot-työkalulla (etsi ensin "
+        f"Energia: sähkönkulutus on tilastossa {'whatsapp_agent:sahkonkulutus'} (päivittyy kerran päivässä; "
+        "energia_paivita hakee heti). Sähkönkulutuksen ja muiden mittausten historian saat ha_tilastot-työkalulla (etsi ensin "
         "tunnus listaa=true, haku esim. 'energia' tai 'kulutus'); lyhyt historia ha_historia. Kerro kulutus kWh "
         "ja vertaa tarvittaessa edelliseen jaksoon. Turku Energian tiedot tulevat 6–24 tunnin viiveellä.\n"
         "Ruokapäiväkirja: kun käyttäjä kertoo, mitä on syöty (tai vahvistaa listan ruoan "
@@ -579,6 +584,13 @@ TOOLS = [
             "properties": {"kalenteri": {"type": "string"}, "tapahtuma_id": {"type": "string"}},
             "required": ["kalenteri", "tapahtuma_id"],
         },
+    },
+    {
+        "name": "energia_paivita",
+        "description": "Hakee sähkönkulutuksen Turku Energian EnergiaOnlinesta (kirjautuu itse asetusten tunnuksilla) ja "
+        "tuo sen Home Assistantin tilastoon whatsapp_agent:sahkonkulutus. Päivittyy myös automaattisesti kerran päivässä.",
+        "input_schema": {"type": "object", "properties": {
+            "paivia": {"type": "integer", "description": "Montako päivää taaksepäin haetaan (oletus 40, enintään 400)"}}},
     },
     {
         "name": "ha_historia",
@@ -1552,7 +1564,8 @@ async def web_state(page, mode: str = "rakenne", start: int = 0) -> str:
                 "Home Assistantin selainpaneelissa ja jatka, kun hän kertoo valmiiksi.]")
     part = text[start:start + WEB_MAX_CHARS]
     more = f"\n\n[Sivu jatkuu: alku={start + WEB_MAX_CHARS}]" if len(text) > start + WEB_MAX_CHARS else ""
-    return f"URL: {page.url}\nOtsikko: {await page.title()}\n\n{part}{more}{note}"
+    out = f"URL: {page.url}\nOtsikko: {await page.title()}\n\n{part}{more}{note}"
+    return out.replace(EO_PASSWORD, "••••••") if len(EO_PASSWORD) >= 6 else out
 
 
 async def web_target_text(target, label: str) -> str:
@@ -1721,6 +1734,207 @@ async def ha_history(entity_id: str, start: str, end: str | None) -> str:
     return f"{entity_id}: {len(rows)} arvoa" + (f" (joka {step}. näytetään)" if step > 1 else "") + "\n" + "\n".join(pts)
 
 
+# --- EnergiaOnline (Turku Energia) -> Home Assistantin tilasto ---
+# Agentti kirjautuu lisäosan selaimessa omilla tunnuksillasi. EnergiaOnlinen sivu hakee kulutuksen omalla
+# kirjautumisellaan; agentti muuttaa pyynnöstä vain aikavälin ja lukee vastauksen (kirjautumisavaimiin ei kosketa).
+EO_URL = "https://www.energiaonline.fi/"
+EO_API_MATCH = "GetConsumptionAndProductionData"
+EO_STATE = Path("/data/energia.json")  # päiväkohtaiset kWh-arvot
+ENERGY_STAT_ID = "whatsapp_agent:sahkonkulutus"
+energy_lock = asyncio.Lock()
+
+
+class EnergyError(Exception):
+    pass
+
+
+async def eo_find(page, selectors: str):
+    for frame in page.frames:
+        loc = frame.locator(selectors)
+        try:
+            n = await loc.count()
+        except Exception:
+            continue
+        for i in range(n):
+            if await loc.nth(i).is_visible():
+                return loc.nth(i)
+    return None
+
+
+async def eo_login(page) -> None:
+    """Kirjautuu, jos sivu pyytää. Tukee yhdellä ja kahdella sivulla tehtävää kirjautumista."""
+    email_sel = ("input[type=email], input[autocomplete=username], input[name*=mail i], input[id*=mail i], "
+                 "input[name*=user i], input[id*=user i], input[name*=login i]")
+    for _ in range(4):  # kirjautumislinkki -> sähköposti -> salasana (kaksivaiheinen kirjautuminen)
+        await page.wait_for_timeout(1500)
+        text = await page.locator("body").inner_text()
+        if WEB_CHECK.search(text):
+            raise EnergyError("Kirjautumissivulla on kuvavarmenne. Kirjaudu kerran itse Kotiapuri-selainpaneelissa.")
+        pw = await eo_find(page, "input[type=password]")
+        email = await eo_find(page, email_sel)
+        if pw is None and email is None:
+            if _ == 0:  # kirjautumislinkki etusivulla?
+                link = await eo_find(page, "a:has-text('Kirjaudu'), button:has-text('Kirjaudu'), a:has-text('Log in')")
+                if link is None:
+                    return  # ei kirjautumiskenttiä: oletetaan, että ollaan jo kirjautuneena
+                await link.click()
+                await page.wait_for_load_state("domcontentloaded")
+                continue
+            return
+        if not (EO_EMAIL and EO_PASSWORD):
+            raise EnergyError("Lisää lisäosan asetuksiin energia_sahkoposti ja energia_salasana.")
+        if email is not None:
+            await email.fill(EO_EMAIL)
+        if pw is None:
+            await email.press("Enter")  # kaksivaiheinen kirjautuminen
+            await page.wait_for_load_state("domcontentloaded")
+            continue
+        await pw.fill(EO_PASSWORD)
+        await pw.press("Enter")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=20_000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(2000)
+        if await eo_find(page, "input[type=password]") is not None:
+            raise EnergyError("Kirjautuminen epäonnistui: tarkista energia_sahkoposti ja energia_salasana.")
+        return
+
+
+def eo_parse(payload: dict) -> dict[str, float]:
+    """Mitatun kulutuksen kWh-arvot päivittäin (Suomen aikaa). Puuttuvia arvoja ei muuteta nolliksi."""
+    main = payload.get("mainData") or {}
+    series = [s for s in main.get("consumptionAndProductionDataList") or []
+              if s.get("chartDataType") == "ConsumptionMeasured" and str(s.get("unit", "")).lower() == "kwh"]
+    if not series:
+        raise EnergyError("EnergiaOnlinen vastauksessa ei ollut mitattua kulutusta.")
+    days: dict[str, float] = {}
+    for stamp, datum in zip(main.get("timeSteps") or [], series[0].get("dataValues") or []):
+        value = datum[0] if isinstance(datum, list) and datum else datum
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            continue
+        day = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(TZ).date().isoformat()
+        days[day] = round(days.get(day, 0.0) + float(value), 6)
+    return days
+
+
+async def energy_fetch(days_back: int) -> dict[str, float]:
+    await sk_browser()  # lisäosan selain (asetus skaupat_selain)
+    page = _skb.get("eo")
+    if page is None or page.is_closed():
+        page = _skb["eo"] = await _skb["ctx"].new_page()
+    today = datetime.now(TZ).date()
+    start, end = (today - timedelta(days=days_back)).isoformat(), today.isoformat()
+    got: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    async def adjust(route):
+        req = route.request
+        if req.method == "POST" and req.post_data:
+            try:
+                body = json.loads(req.post_data)
+                body["range"] = {"from": start, "to": end}
+                body["consumptionAndProductionResolution"] = EO_RESOLUTION
+                await route.continue_(post_data=json.dumps(body))
+                return
+            except (ValueError, TypeError):
+                pass
+        await route.continue_()
+
+    async def on_response(resp):
+        if EO_API_MATCH in resp.url and resp.request.method == "POST" and not got.done():
+            try:
+                got.set_result((resp.status, await resp.json()))
+            except Exception as e:
+                got.set_result((resp.status, {"error": str(e)}))
+
+    await page.route(f"**/*{EO_API_MATCH}*", adjust)
+    page.on("response", on_response)
+    try:
+        await page.goto(EO_URL, wait_until="domcontentloaded", timeout=45_000)
+        await eo_login(page)
+        for attempt in range(3):  # sivu hakee kulutuksen itse; tarvittaessa avataan kulutusnäkymä
+            try:
+                status, data = await asyncio.wait_for(asyncio.shield(got), timeout=20)
+                break
+            except asyncio.TimeoutError:
+                link = await eo_find(page, "a:has-text('Kulutus'), button:has-text('Kulutus'), a:has-text('Sähkönkulutus')")
+                if link is not None and attempt == 0:
+                    await link.click()
+                else:
+                    await page.reload(wait_until="domcontentloaded")
+        else:
+            raise EnergyError("EnergiaOnline ei hakenut kulutustietoja (sivu on ehkä muuttunut). Katso Kotiapuri-selainpaneelia.")
+    finally:
+        page.remove_listener("response", on_response)
+        await page.unroute(f"**/*{EO_API_MATCH}*")
+    if status in (401, 403):
+        raise EnergyError("EnergiaOnline hylkäsi haun: kirjautuminen ei onnistunut.")
+    if status >= 400 or not isinstance(data, dict):
+        raise EnergyError(f"EnergiaOnline vastasi virheellä ({status}).")
+    return eo_parse(data)
+
+
+async def energy_import(days: dict[str, float]) -> None:
+    """Tuo päiväkulutukset Home Assistantin ulkoiseen tilastoon (näkyy Energia-näkymässä)."""
+    total, stats = 0.0, []
+    for day in sorted(days):
+        total = round(total + days[day], 6)
+        start = datetime.fromisoformat(day).replace(tzinfo=TZ)
+        stats.append({"start": start.isoformat(), "state": total, "sum": total})
+    base = {"has_sum": True, "name": "Sähkönkulutus (EnergiaOnline)", "source": "whatsapp_agent",
+            "statistic_id": ENERGY_STAT_ID, "unit_of_measurement": "kWh"}
+    variants = [{**base, "mean_type": 0, "unit_class": "energy"}, {**base, "mean_type": 0}, {**base, "has_mean": False}]
+    last_error = None
+    for meta in variants:  # Home Assistantin versiot eroavat metatietojen kentissä
+        try:
+            await ha_ws({"type": "recorder/import_statistics", "metadata": meta, "stats": stats})
+            return
+        except RuntimeError as e:
+            last_error = e
+    raise EnergyError(f"Tilaston tuonti Home Assistantiin epäonnistui: {last_error}")
+
+
+async def energy_update(days_back: int = 40) -> str:
+    days_back = max(1, min(days_back, 400))
+    async with energy_lock:
+        try:
+            new = await energy_fetch(days_back)
+        except EnergyError as e:
+            return str(e)
+        except SKaupatError:
+            return "Lisäosan selain ei ole käytössä: laita asetus skaupat_selain päälle."
+        try:
+            stored = json.loads(EO_STATE.read_text())
+        except (OSError, ValueError):
+            stored = {}
+        stored.update(new)
+        EO_STATE.write_text(json.dumps(stored))
+        try:
+            await energy_import(stored)
+        except EnergyError as e:
+            return str(e)
+    recent = sorted(new)[-7:]
+    lines = [f"{datetime.fromisoformat(d):%d.%m.}: {new[d]:.2f} kWh" for d in recent]
+    log.info("Sähkönkulutus päivitetty: %d päivää", len(new))
+    return (f"Haettu {len(new)} päivän kulutus (tilasto {ENERGY_STAT_ID}). Viimeiset päivät:\n" + "\n".join(lines)
+            + "\nHuom: EnergiaOnlinen tiedot tulevat 6–24 tunnin viiveellä.")
+
+
+async def energy_daily() -> None:
+    """Päivittää kulutuksen kerran päivässä (klo 8.30) ja 10 min käynnistyksen jälkeen."""
+    if not (EO_EMAIL and EO_PASSWORD and SK_ENABLED):
+        return
+    await asyncio.sleep(600)
+    while True:
+        result = await energy_update(40)
+        log.info("Automaattinen sähkönkulutuksen päivitys: %s", result.splitlines()[0])
+        now = datetime.now(TZ)
+        nxt = now.replace(hour=8, minute=30, second=0, microsecond=0)
+        if nxt <= now:
+            nxt += timedelta(days=1)
+        await asyncio.sleep((nxt - now).total_seconds())
+
+
 async def ha_ws(message: dict) -> dict:
     """Yksi kysely Home Assistantin websocket-rajapintaan (tilastot eivät ole REST-rajapinnassa)."""
     import websockets  # vain tarvittaessa
@@ -1883,6 +2097,9 @@ async def run_tool(name: str, args: dict) -> str | list:
 
         if name == "tallenna_resepti":
             return await save_recipe(args["url"], args.get("nimi", ""))
+
+        if name == "energia_paivita":
+            return await energy_update(int(args.get("paivia") or 40))
 
         if name == "ha_historia":
             return await ha_history(args["entity_id"], args["alku"], args.get("loppu"))
@@ -2430,6 +2647,7 @@ async def main() -> None:
     log.info("Agentti käynnistyy, tiedostokansio %s", FILES_ROOT)
     if SK_ENABLED:
         asyncio.create_task(sk_start_browser())
+        asyncio.create_task(energy_daily())
 
     async def shutdown() -> None:
         log.info("Lisäosa sammuu, suljetaan selain hallitusti")

@@ -24,6 +24,9 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
   joka ajaa `selain_*`-perustyökalut omassa keskustelussaan (tiivis sivunäkymä `compact_snapshot`). Selain oma välilehti. Maksupainikkeet estetty; lopullinen
   vahvistus vaatii `selain_pyyda_vahvistus` + käyttäjän uuden viestin (`confirm_asked`, `turn_no`). Yhteystiedot
   asetuksista paikkamerkeillä {NIMI} {PUHELIN} {SAHKOPOSTI}.
+- Sähkönkulutus: `energy_update` kirjautuu EnergiaOnlineen (asetukset `energia_*`) lisäosan selaimessa, muuttaa sivun
+  oman kulutuspyynnön aikavälin (`page.route`) ja tuo päiväarvot tilastoon `whatsapp_agent:sahkonkulutus`
+  (`recorder/import_statistics`), kerran päivässä. Salasana peitetään selaimen näkymistä.
 - Tiedostot: `/share/agent` (reseptit/, asetukset/, ruokalistat/, saapuneet/, ostokset/).
 - Keskusteluhistoria: `/data/historia/` (säilyy uudelleenkäynnistyksissä ja päivityksissä). Lyhennys koon mukaan
   (`MAX_HISTORY_CHARS`): ensin vanhojen vuorojen työvaiheet tiivistetään, vasta sitten vanhimmat vuorot pois.
