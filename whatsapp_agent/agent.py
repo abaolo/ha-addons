@@ -273,7 +273,8 @@ TOOLS = [
     },
     {
         "name": "ha_get_states",
-        "description": "Hakee Home Assistantin entiteettien tilat (lämpötilat, kosteudet, valot, vuotovahti...).",
+        "description": "Hakee Home Assistantin entiteettien tilat (lämpötilat, kosteudet, valot, vuotovahti...) ja "
+        "alueen (huone), johon käyttäjä on laitteen sijoittanut. Hakusana osuu myös alueen nimeen, esim. 'makuuhuone'.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2030,10 +2031,15 @@ async def fmi_resolve_place() -> None:
                                "paikan nimi tai koordinaatit.") from e
 
 
-def fmi_location() -> dict:
-    """saa_paikka: paikan nimi (Turku), koordinaatit (63.06,21.68) tai havaintoaseman numero (fmisid, 101462)."""
+def fmi_location(observations: bool = False) -> dict:
+    """saa_paikka: paikan nimi (Turku), koordinaatit (63.06,21.68) tai havaintoaseman numero (fmisid, 101462).
+    Havaintohaut eivät tue latlon-parametria, joten koordinaateille annetaan alue (bbox, noin 25 km joka suuntaan)
+    ja fmi_pick_station valitsee lähimmän aseman."""
     v = FMI_PLACE.replace(" ", "")
     if re.fullmatch(r"-?\d+(\.\d+)?,-?\d+(\.\d+)?", v):
+        if observations:
+            lat, lon = (float(x) for x in v.split(","))
+            return {"bbox": f"{lon - 0.5:.3f},{lat - 0.22:.3f},{lon + 0.5:.3f},{lat + 0.22:.3f}"}
         return {"latlon": v}
     if re.fullmatch(r"\d{5,6}", v):
         return {"fmisid": v}
@@ -2078,7 +2084,7 @@ fmi_last_station = {"pos": ""}
 
 async def fmi_query(query: str, params: dict, with_pos: bool = False) -> list:
     q = {"service": "WFS", "version": "2.0.0", "request": "getFeature", "storedquery_id": query,
-         **fmi_location(), **params}
+         **fmi_location("observations" in query), **params}
     try:
         r = await http.get(FMI_WFS, params=q, timeout=60)
     except httpx.HTTPError as e:
@@ -2120,7 +2126,8 @@ async def fmi_observed(start: datetime, end: datetime, preferred: str = "") -> d
         nxt = min(cur + timedelta(hours=step), end)
         try:
             rows = await fmi_query("fmi::observations::weather::simple", {
-                "parameters": "t2m", "timestep": "60", "maxlocations": "5",
+                "parameters": "t2m", "timestep": "60",
+            **({} if "bbox" in fmi_location(True) else {"maxlocations": "5"}),
                 "starttime": cur.strftime("%Y-%m-%dT%H:%M:%SZ"), "endtime": nxt.strftime("%Y-%m-%dT%H:%M:%SZ")},
                 with_pos=True)
         except WeatherError as e:  # yksi epäonnistunut pala ei kaada koko hakua
@@ -2330,6 +2337,26 @@ async def weather_daily() -> None:
         await asyncio.sleep((nxt - now).total_seconds())
 
 
+_areas_cache: dict = {"at": 0.0, "map": {}}
+AREA_TEMPLATE = ("{% for s in states %}{% set a = area_name(s.entity_id) %}{% if a %}"
+                 "{{ s.entity_id }}\t{{ a }}\n{% endif %}{% endfor %}")
+
+
+async def ha_areas() -> dict[str, str]:
+    """entity_id -> alueen (huoneen) nimi Home Assistantista; välimuisti 10 min. Virhe ei estä tilojen hakua."""
+    loop = asyncio.get_running_loop()
+    if loop.time() - _areas_cache["at"] < 600:
+        return _areas_cache["map"]
+    try:
+        r = await http.post(f"{HA_URL}/template", headers=HA_HEADERS, json={"template": AREA_TEMPLATE}, timeout=30)
+        r.raise_for_status()
+        _areas_cache["map"] = dict(line.split("\t", 1) for line in r.text.splitlines() if "\t" in line)
+        _areas_cache["at"] = loop.time()
+    except httpx.HTTPError as e:
+        log.warning("Alueiden haku epäonnistui: %s", e)
+    return _areas_cache["map"]
+
+
 async def ha_ws(message: dict) -> dict:
     """Yksi kysely Home Assistantin websocket-rajapintaan (tilastot eivät ole REST-rajapinnassa)."""
     import websockets  # vain tarvittaessa
@@ -2447,15 +2474,18 @@ async def run_tool(name: str, args: dict) -> str | list:
             r = await http.get(f"{HA_URL}/states", headers=HA_HEADERS)
             r.raise_for_status()
             domain, search = args.get("domain"), (args.get("search") or "").lower()
+            areas = await ha_areas()
             rows = []
             for s in r.json():
                 eid, attrs = s["entity_id"], s.get("attributes", {})
                 fname = attrs.get("friendly_name", "")
+                area = areas.get(eid, "")
                 if domain and not eid.startswith(f"{domain}."):
                     continue
-                if search and search not in eid.lower() and search not in fname.lower():
+                if search and search not in eid.lower() and search not in fname.lower() and search not in area.lower():
                     continue
-                rows.append(f"{eid} | {fname} | {s['state']} {attrs.get('unit_of_measurement', '')}".rstrip())
+                rows.append(f"{eid} | {fname} | {('alue: ' + area) if area else 'ei aluetta'} | "
+                            f"{s['state']} {attrs.get('unit_of_measurement', '')}".rstrip())
             return "\n".join(rows[:150]) or "Ei osumia."
 
         if name == "ha_call_service":
