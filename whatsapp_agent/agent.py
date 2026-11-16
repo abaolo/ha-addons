@@ -1770,6 +1770,9 @@ async def ha_history(entity_id: str, start: str, end: str | None) -> str:
 # Agentti kirjautuu lisäosan selaimessa omilla tunnuksillasi. EnergiaOnlinen sivu hakee kulutuksen omalla
 # kirjautumisellaan; agentti muuttaa pyynnöstä vain aikavälin ja lukee vastauksen (kirjautumisavaimiin ei kosketa).
 EO_URL = "https://www.energiaonline.fi/"
+EO_PAGE = Path("/data/energia_sivu.json")  # sivu, jolla EnergiaOnline viimeksi haki kulutuksen
+EO_NAV_LINKS = ("a:has-text('Kulutus'), button:has-text('Kulutus'), a:has-text('Sähkönkulutus'), "
+                "a:has-text('Kulutusseuranta'), a:has-text('Energiankulutus'), [href*=kulutus i], [href*=consumption i]")
 EO_API_MATCH = "GetConsumptionAndProductionData"
 EO_STATE = Path("/data/energia.json")  # päiväkohtaiset kWh-arvot
 EO_HOURS = Path("/data/energia_tunnit.json")  # {"2026-11-15T20:00:00Z": kWh} tunnin alku UTC-aikana
@@ -1949,6 +1952,11 @@ async def energy_fetch(days_back: int, resolution: str = "P1D") -> list[tuple[da
 
     async def on_response(resp):
         if EO_API_MATCH in resp.url and resp.request.method == "POST" and not got.done():
+            if "energiaonline" in page.url:
+                try:
+                    EO_PAGE.write_text(json.dumps({"url": page.url}))
+                except OSError:
+                    pass
             try:
                 got.set_result((resp.status, await resp.json()))
             except Exception as e:
@@ -1957,21 +1965,45 @@ async def energy_fetch(days_back: int, resolution: str = "P1D") -> list[tuple[da
     await page.route(f"**/*{EO_API_MATCH}*", adjust)
     page.on("response", on_response)
     try:
-        await page.goto(EO_URL, wait_until="domcontentloaded", timeout=45_000)
+        try:
+            known = json.loads(EO_PAGE.read_text()).get("url") or ""
+        except (OSError, ValueError):
+            known = ""
+        await page.goto(known or EO_URL, wait_until="domcontentloaded", timeout=45_000)
         await eo_login(page)
-        for attempt in range(3):  # sivu hakee kulutuksen itse; tarvittaessa avataan kulutusnäkymä
+        # Sivu hakee kulutuksen itse kulutusnäkymässä. Jos haku ei käynnisty: kulutusnäkymän linkki,
+        # aiemmin toiminut sivu, etusivu ja lopuksi uudelleenlataus.
+        steps = ["link", "known", "home", "reload"]
+        status = data = None
+        for step in [None] + steps:
+            if step == "link":
+                link = await eo_find(page, EO_NAV_LINKS)
+                if link is None:
+                    continue
+                await link.click()
+            elif step == "known":
+                if not known or page.url == known:
+                    continue
+                await page.goto(known, wait_until="domcontentloaded", timeout=45_000)
+                await eo_login(page)
+            elif step == "home":
+                await page.goto(EO_URL, wait_until="domcontentloaded", timeout=45_000)
+                await eo_login(page)
+                link = await eo_find(page, EO_NAV_LINKS)
+                if link is not None:
+                    await link.click()
+            elif step == "reload":
+                await page.reload(wait_until="domcontentloaded")
             try:
                 status, data = await asyncio.wait_for(asyncio.shield(got), timeout=20)
                 break
             except asyncio.TimeoutError:
-                link = await eo_find(page, "a:has-text('Kulutus'), button:has-text('Kulutus'), a:has-text('Sähkönkulutus')")
-                if link is not None and attempt == 0:
-                    await link.click()
-                else:
-                    await page.reload(wait_until="domcontentloaded")
+                continue
         else:
+            label = "päivätiedot" if resolution == "P1D" else f"tarkkuus {resolution}"
             raise EnergyError(await eo_report_failure(
-                page, "Kirjautuminen onnistui, mutta EnergiaOnline ei hakenut kulutustietoja (sivu on ehkä muuttunut)."))
+                page, f"Kirjautuminen onnistui, mutta EnergiaOnline ei hakenut kulutustietoja ({label}; "
+                "sivu on ehkä muuttunut)."))
     finally:
         page.remove_listener("response", on_response)
         await page.unroute(f"**/*{EO_API_MATCH}*")
