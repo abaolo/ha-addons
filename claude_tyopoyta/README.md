@@ -11,6 +11,14 @@ paneelin **Selain**-välilehdellä, ja agentti jatkaa sen jälkeen.
    (avaa näkyvä linkki ja liitä koodi takaisin päätteeseen). Kirjautuminen säilyy päivityksissä.
 3. Anna Claudelle tehtävä päätteessä tai ota etäohjaus käyttöön (alla).
 
+## Puhelimella
+
+- **Pääte**-välilehden alareunassa on tekstikenttä: kirjoita tai liitä teksti (esim. kirjautumiskoodi) ja paina
+  **Lähetä**. Näppäimillä ↑ ↓ Enter Esc Tab valitaan vaihtoehtoja Clauden valikoista.
+- **Linkit** poimii päätteestä kaikki osoitteet kokonaisina: avaa puhelimen selaimessa tai kopioi.
+- Kun Claude avaa sivun (myös `/login`), se aukeaa **Selain**-välilehdelle. Käännä puhelin vaakaan; noVNC:n
+  sivupalkista saa näppäimistön esiin.
+
 ## Etäohjaus Claude-sovelluksesta
 
 Asetus `etaohjaus: true` käynnistää `claude remote-control --name Minikone` -istunnon. Se näkyy Claude-sovelluksessa

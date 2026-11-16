@@ -1,5 +1,5 @@
 name: Claude-työpöytä
-version: "0.1.0"
+version: "0.1.1"
 slug: claude_tyopoyta
 description: Claude Code ja oma Chromium-selain virtuaalinäytöllä; kuvavarmenteet ratkaiset itse paneelissa
 url: https://github.com/abaolo/ha-addons/tree/main/claude_tyopoyta

@@ -41,7 +41,8 @@ Repo on julkinen: älä lisää tänne mitään yksityistä.
 
 - Docker `node:22-bookworm-slim`: Claude Code (npm), `@playwright/mcp` (`playwright-mcp --cdp-endpoint`), Chromium
   Xvfb:llä (CDP 9222 vain kontissa), x11vnc + websockify (6081), ttyd 1.7.7 (GitHub-julkaisu, sha256) + tmux (7681),
-  nginx yhdistää ingressiin 8099 (`/vnc/`, `/terminal/`, sallittu vain 172.30.32.2).
+  nginx yhdistää ingressiin 8099 (`/vnc/`, `/terminal/`, `/api/` = `apuri.py` 7682: tekstin/näppäinten lähetys tmuxiin ja
+  linkkien poiminta mobiilille; sallittu vain 172.30.32.2). `BROWSER`/`xdg-open` → `avaa-selaimessa.sh` (lisäosan Chromium).
 - Ei `homeassistant_api`/`hassio_api`/`share`: vain `addon_config` (`/config` = työkansio, `CLAUDE.md` ja `.mcp.json`
   kopioidaan jos puuttuvat) ja `/data` (HOME, Chromium-profiili). Asetus `etaohjaus` → `claude remote-control`.
 - Agentti ei ohita kuvavarmenteita: käyttäjä hoitaa ne paneelissa.

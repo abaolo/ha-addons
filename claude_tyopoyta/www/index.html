@@ -1,35 +1,135 @@
 <!doctype html>
 <html lang="fi">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Claude-työpöytä</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #111; color: #e1e1e1; font-family: sans-serif; }
-  body { display: flex; flex-direction: column; }
-  nav { display: flex; gap: 8px; padding: 6px 8px; background: #1c1c1c; align-items: center; }
-  button { background: #2a2a2a; color: #e1e1e1; border: 1px solid #444; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 14px; }
-  button.on { background: #3b5bdb; border-color: #3b5bdb; }
-  nav span { margin-left: auto; font-size: 12px; color: #999; }
-  iframe { flex: 1; border: 0; width: 100%; display: none; background: #000; }
+  :root { --bg: #111; --bar: #1c1c1c; --btn: #2a2a2a; --line: #444; --fg: #e1e1e1; --dim: #999; --acc: #3b5bdb; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: sans-serif; }
+  body { display: flex; flex-direction: column; height: 100dvh; }
+  nav { display: flex; gap: 8px; padding: 6px 8px; background: var(--bar); align-items: center; flex-wrap: wrap; }
+  button { background: var(--btn); color: var(--fg); border: 1px solid var(--line); border-radius: 8px;
+           padding: 8px 12px; font-size: 15px; cursor: pointer; touch-action: manipulation; }
+  button.on { background: var(--acc); border-color: var(--acc); }
+  nav .vihje { margin-left: auto; font-size: 12px; color: var(--dim); }
+  main { flex: 1; position: relative; min-height: 0; }
+  iframe { position: absolute; inset: 0; border: 0; width: 100%; height: 100%; display: none; background: #000; }
   iframe.on { display: block; }
+  #ohjaus { background: var(--bar); padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); display: flex;
+            flex-direction: column; gap: 6px; }
+  #ohjaus.piilo { display: none; }
+  .rivi { display: flex; gap: 6px; }
+  .rivi.napit { overflow-x: auto; }
+  .rivi.napit button { flex: 0 0 auto; padding: 8px 14px; }
+  textarea { flex: 1; min-width: 0; resize: none; background: #0d0d0d; color: var(--fg); border: 1px solid var(--line);
+             border-radius: 8px; padding: 8px; font-size: 16px; font-family: inherit; height: 42px; }
+  #laheta { background: var(--acc); border-color: var(--acc); }
+  #linkit { position: absolute; inset: 0; background: rgba(0,0,0,.92); padding: 14px; overflow: auto; display: none; z-index: 5; }
+  #linkit.auki { display: block; }
+  #linkit h3 { margin: 0 0 10px; font-size: 16px; }
+  .linkki { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .linkki code { display: block; word-break: break-all; font-size: 13px; color: #cfd8ff; margin-bottom: 8px; user-select: all; }
+  .linkki a { color: inherit; text-decoration: none; }
+  #ilmoitus { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); background: #333; padding: 8px 14px;
+              border-radius: 8px; font-size: 14px; display: none; z-index: 10; }
 </style>
 </head>
 <body>
 <nav>
   <button id="b-term" class="on" onclick="show('term')">Pääte</button>
   <button id="b-vnc" onclick="show('vnc')">Selain</button>
-  <span>Kuvavarmenteet ja kirjautumiset: Selain-välilehti</span>
+  <button onclick="avaaLinkit()">Linkit</button>
+  <span class="vihje">Kirjautumiset ja kuvavarmenteet: Selain</span>
 </nav>
-<iframe id="term" class="on" src="terminal/"></iframe>
-<iframe id="vnc" src="vnc/"></iframe>
+<main>
+  <iframe id="term" class="on" src="terminal/"></iframe>
+  <iframe id="vnc" src="vnc/"></iframe>
+  <div id="linkit">
+    <h3>Linkit päätteestä (uusin ensin)</h3>
+    <div id="lista">Haetaan…</div>
+    <button onclick="suljeLinkit()">Sulje</button>
+  </div>
+</main>
+<div id="ohjaus">
+  <div class="rivi">
+    <textarea id="teksti" placeholder="Kirjoita tai liitä tähän (esim. kirjautumiskoodi)" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
+    <button id="laheta" onclick="laheta()">Lähetä</button>
+  </div>
+  <div class="rivi napit">
+    <button onclick="nappi('Up')">↑</button>
+    <button onclick="nappi('Down')">↓</button>
+    <button onclick="nappi('Enter')">Enter</button>
+    <button onclick="nappi('Escape')">Esc</button>
+    <button onclick="nappi('Tab')">Tab</button>
+    <button onclick="nappi('BTab')">⇧Tab</button>
+    <button onclick="nappi('C-c')">Ctrl-C</button>
+    <button onclick="nappi('BSpace')">⌫</button>
+    <button onclick="lahetaKomento('claude')">claude</button>
+    <button onclick="lahetaKomento('/login')">/login</button>
+  </div>
+</div>
+<div id="ilmoitus"></div>
 <script>
+  function ilmoita(t) {
+    const e = document.getElementById("ilmoitus");
+    e.textContent = t; e.style.display = "block";
+    clearTimeout(ilmoita.t); ilmoita.t = setTimeout(() => e.style.display = "none", 1800);
+  }
   function show(id) {
     for (const x of ["term", "vnc"]) {
       document.getElementById(x).classList.toggle("on", x === id);
       document.getElementById("b-" + x).classList.toggle("on", x === id);
     }
+    document.getElementById("ohjaus").classList.toggle("piilo", id !== "term");
     try { localStorage.setItem("valilehti", id); } catch (e) {}
   }
+  async function post(polku, data) {
+    const r = await fetch(polku, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).virhe || r.status);
+  }
+  async function laheta() {
+    const el = document.getElementById("teksti");
+    try { await post("api/laheta", { teksti: el.value, enter: true }); el.value = ""; }
+    catch (e) { ilmoita("Lähetys epäonnistui: " + e.message); }
+  }
+  async function lahetaKomento(t) {
+    try { await post("api/laheta", { teksti: t, enter: true }); } catch (e) { ilmoita("Epäonnistui: " + e.message); }
+  }
+  async function nappi(n) {
+    try { await post("api/nappi", { nappi: n }); } catch (e) { ilmoita("Epäonnistui: " + e.message); }
+  }
+  document.getElementById("teksti").addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); laheta(); }
+  });
+  async function kopioi(url) {
+    try { await navigator.clipboard.writeText(url); ilmoita("Kopioitu"); }
+    catch (e) {
+      const t = document.createElement("textarea"); t.value = url; document.body.appendChild(t);
+      t.select(); let ok = false; try { ok = document.execCommand("copy"); } catch (e2) {}
+      t.remove(); ilmoita(ok ? "Kopioitu" : "Paina linkkiä pitkään ja valitse Kopioi");
+    }
+  }
+  async function avaaLinkit() {
+    const box = document.getElementById("linkit"), lista = document.getElementById("lista");
+    box.classList.add("auki"); lista.textContent = "Haetaan…";
+    try {
+      const d = await (await fetch("api/linkit", { cache: "no-store" })).json();
+      lista.innerHTML = "";
+      if (!d.linkit.length) { lista.textContent = "Päätteessä ei ole linkkejä."; return; }
+      for (const url of d.linkit) {
+        const div = document.createElement("div"); div.className = "linkki";
+        const code = document.createElement("code"); code.textContent = url;
+        const a = document.createElement("a"); a.href = url; a.target = "_blank"; a.rel = "noopener";
+        const b1 = document.createElement("button"); b1.textContent = "Avaa puhelimen selaimessa"; a.appendChild(b1);
+        const b2 = document.createElement("button"); b2.textContent = "Kopioi"; b2.style.marginLeft = "6px";
+        b2.onclick = () => kopioi(url);
+        div.append(code, a, b2); lista.appendChild(div);
+      }
+    } catch (e) { lista.textContent = "Linkkien haku epäonnistui."; }
+  }
+  function suljeLinkit() { document.getElementById("linkit").classList.remove("auki"); }
   try { const v = localStorage.getItem("valilehti"); if (v) show(v); } catch (e) {}
 </script>
 </body>

@@ -22,13 +22,14 @@ RUN npm install -g @anthropic-ai/claude-code @playwright/mcp \
     && npm cache clean --force
 
 # Päivitykset tulevat lisäosan päivityksen mukana (kuva rakennetaan uudelleen).
-ENV DISABLE_AUTOUPDATER=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=xterm-256color
+ENV BROWSER=/app/avaa-selaimessa.sh DISABLE_AUTOUPDATER=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=xterm-256color
 
 WORKDIR /app
-COPY nginx.conf run.sh ./
+COPY nginx.conf run.sh avaa-selaimessa.sh apuri.py ./
 COPY www ./www
 COPY tyotila ./tyotila
 COPY vnc-index.html /usr/share/novnc/index.html
-RUN chmod +x run.sh
+RUN chmod +x run.sh avaa-selaimessa.sh \
+    && ln -sf /app/avaa-selaimessa.sh /usr/local/bin/xdg-open
 
 CMD ["/app/run.sh"]
