@@ -2010,8 +2010,24 @@ async def energy_daily() -> None:
 
 # ---------- Ulkolämpötila (Ilmatieteen laitoksen avoin data, ei avainta) ----------
 FMI_WFS = "https://opendata.fmi.fi/wfs"
-FMI_PLACE = (OPTIONS.get("saa_paikka") or "Turku").strip()
+FMI_SETTING = (OPTIONS.get("saa_paikka") or "koti").strip()
+FMI_PLACE = FMI_SETTING  # "koti" korvataan Home Assistantin kodin koordinaateilla (fmi_resolve_place)
 FMI_STATE = Path("/data/lampotila.json")  # {"paikka", "alku", "asema", "paivat": {"YYYY-MM-DD": [keski, min, max]}}
+
+
+async def fmi_resolve_place() -> None:
+    """saa_paikka "koti": Home Assistantin kodin sijainti (Asetukset → Järjestelmä → Yleiset), 2 desimaalia."""
+    global FMI_PLACE
+    if FMI_SETTING.lower() not in ("koti", "home"):
+        return
+    try:
+        r = await http.get(f"{HA_URL}/states/zone.home", headers=HA_HEADERS, timeout=20)
+        a = r.json().get("attributes", {})
+        FMI_PLACE = f"{float(a['latitude']):.2f},{float(a['longitude']):.2f}"
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+        if FMI_PLACE == FMI_SETTING:
+            raise WeatherError(f"Kodin sijaintia ei saatu Home Assistantista ({e}). Anna saa_paikka-asetukseen "
+                               "paikan nimi tai koordinaatit.") from e
 
 
 def fmi_location() -> dict:
@@ -2107,7 +2123,7 @@ async def fmi_forecast() -> dict[str, list[float]]:
 async def temp_import(days: dict[str, list[float]]) -> None:
     stats = [{"start": datetime.fromisoformat(d).replace(tzinfo=TZ).isoformat(),
               "mean": v[0], "min": v[1], "max": v[2]} for d, v in sorted(days.items())]
-    base = {"has_sum": False, "name": f"Ulkolämpötila ({FMI_PLACE}, Ilmatieteen laitos)", "source": "whatsapp_agent",
+    base = {"has_sum": False, "name": f"Ulkolämpötila ({FMI_SETTING}, Ilmatieteen laitos)", "source": "whatsapp_agent",
             "statistic_id": TEMP_STAT_ID, "unit_of_measurement": "°C"}
     variants = [{**base, "mean_type": 1, "unit_class": "temperature"}, {**base, "mean_type": 1},
                 {**base, "has_mean": True}]
@@ -2139,6 +2155,7 @@ def temp_stored() -> dict[str, list[float]]:
 async def weather_update(days_back: int) -> dict[str, list[float]]:
     """Hakee vähintään vuoden historian (kerran) ja viimeiset päivät, tallentaa ja tuo tilastoon."""
     days_back = max(1, min(days_back, 400))
+    await fmi_resolve_place()
     async with weather_lock:
         state = temp_state()
         today = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2169,7 +2186,8 @@ async def weather_report(days_back: int, forecast: bool) -> str:
     first = (datetime.now(TZ) - timedelta(days=days_back)).date().isoformat()
     obs = {d: v for d, v in stored.items() if d >= first}
     station = temp_state().get("asema")
-    lines = [f"Ulkolämpötila, {FMI_PLACE} (Ilmatieteen laitos"
+    where = f"koti ({FMI_PLACE})" if FMI_PLACE != FMI_SETTING else FMI_PLACE
+    lines = [f"Ulkolämpötila, {where} (Ilmatieteen laitos"
              + (f", havaintoasema {station}" if station else "") + "), päivän keski / min / max °C."]
     if obs:
         vals = [v[0] for v in obs.values()]
