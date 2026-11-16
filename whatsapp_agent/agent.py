@@ -2111,17 +2111,34 @@ async def fmi_observed(start: datetime, end: datetime, preferred: str = "") -> d
     """Mitatut päiväarvot [keski, min, max] Suomen ajan päivittäin tunneittaisesta lämpötilasta (t2m).
     Haetaan viikon paloissa viideltä lähimmältä asemalta; käytetään yhtä asemaa (fmi_pick_station)."""
     hourly: dict[str, dict[str, float]] = {}  # asema -> {aika: arvo}
-    cur = start
+    # Palat UTC-ajassa ja alle rajapinnan 168 tunnin rajan (Suomen ajassa kesäaikasiirto venyttäisi palan 169 tuntiin).
+    utc = ZoneInfo("UTC")
+    cur, end = start.astimezone(utc), end.astimezone(utc)
+    errors: list[str] = []
+    step = 144
     while cur < end:
-        nxt = min(cur + timedelta(days=7), end)
-        rows = await fmi_query("fmi::observations::weather::simple", {
-            "parameters": "t2m", "timestep": "60", "maxlocations": "5",
-            "starttime": cur.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "endtime": nxt.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")}, with_pos=True)
+        nxt = min(cur + timedelta(hours=step), end)
+        try:
+            rows = await fmi_query("fmi::observations::weather::simple", {
+                "parameters": "t2m", "timestep": "60", "maxlocations": "5",
+                "starttime": cur.strftime("%Y-%m-%dT%H:%M:%SZ"), "endtime": nxt.strftime("%Y-%m-%dT%H:%M:%SZ")},
+                with_pos=True)
+        except WeatherError as e:  # yksi epäonnistunut pala ei kaada koko hakua
+            if "too long" in str(e).lower() and step > 12:
+                step //= 2  # rajapinnan aikaraja pienempi kuin oletettu: lyhyemmät palat
+                continue
+            errors.append(str(e))
+            rows = []
         for time, _par, v, pos in rows:
             hourly.setdefault(pos, {})[time] = v
         cur = nxt
+    fmi_last_station["errors"] = len(errors)
+    if errors:
+        log.warning("Lämpötilahavainnot: %d/%d hakua epäonnistui, esim. %s", len(errors),
+                    len(errors) + 1, errors[0])
     if not hourly:
+        if errors:
+            raise WeatherError(errors[0])
         return {}
     station = fmi_pick_station({p: len(v) for p, v in hourly.items()}, preferred)
     fmi_last_station["pos"] = station
@@ -2198,7 +2215,7 @@ async def weather_update(days_back: int) -> dict[str, list[float]]:
             log.warning("Ilmatieteen laitokselta ei saatu lämpötilahavaintoja (%s, %s alkaen)", FMI_PLACE, start.date())
             return state["paivat"]
         state["paivat"].update(new)
-        if start.date().isoformat() <= want:
+        if start.date().isoformat() <= want and not fmi_last_station.get("errors"):
             state["alku"] = min(state.get("alku") or want, want)
         if fmi_last_station["pos"]:
             state["asema"] = fmi_last_station["pos"]
