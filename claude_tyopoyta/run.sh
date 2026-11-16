@@ -11,6 +11,8 @@ mkdir -p "$HOME" "$WORK" /data/chromium
 for f in CLAUDE.md .mcp.json; do
     [ -e "$WORK/$f" ] || cp "/app/tyotila/$f" "$WORK/$f"
 done
+# 0.1.0 kopioi väärän MCP-komennon nimen
+sed -i 's/"mcp-server-playwright"/"playwright-mcp"/' "$WORK/.mcp.json" 2>/dev/null
 
 echo "Claude-työpöytä: käynnistetään virtuaalinäyttö"
 Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
