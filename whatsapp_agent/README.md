@@ -145,6 +145,14 @@ agentti vastaa aina.
 Asetukset: `stt_palvelu` (groq tai openai) ja `stt_api_key`. Ääni lähetetään valitulle palvelulle
 tunnistettavaksi; ääniviestiä ei tallenneta, kun tunnistus onnistuu.
 
+## Sähkönkulutus ja historia
+
+Agentti lukee Home Assistantin historiaa (`ha_historia`) ja pitkäaikaisia tilastoja (`ha_tilastot`), esim.
+Energia-näkymän sähkönkulutuksen päivittäin, viikoittain tai kuukausittain. Turku Energian kulutustiedot saa
+Home Assistantiin epävirallisella HACS-integraatiolla
+[artepe/turku-energia-haos](https://github.com/artepe/turku-energia-haos) (beta, tiedot 6–24 h viiveellä).
+Kysy esim. *"Paljonko sähköä kului tässä kuussa verrattuna viime kuuhun?"*
+
 ## Muisti
 
 Keskusteluhistoria tallentuu lisäosan `/data/historia/`-kansioon, joten agentti muistaa keskustelun myös

@@ -33,6 +33,7 @@ log = logging.getLogger("agent")
 
 OPTIONS = json.loads(Path("/data/options.json").read_text())
 HA_URL = "http://supervisor/core/api"
+HA_WS_URL = "ws://supervisor/core/websocket"
 HA_HEADERS = {"Authorization": f"Bearer {os.environ['SUPERVISOR_TOKEN']}"}
 FILES_ROOT = Path("/share/agent").resolve()
 FILES_ROOT.mkdir(parents=True, exist_ok=True)
@@ -144,6 +145,9 @@ def system_prompt() -> str:
         "kirjautuminen, pyydä käyttäjää hoitamaan se Home Assistantin selainpaneelissa ja jatka sen jälkeen. "
         "Onnistuneen varauksen jälkeen lisää se kalenteriin asetukset/kalenteri.md:n sääntöjen mukaan "
         "(väri, nimi, muistutus) ja kerro varauksen tiedot lyhyesti.\n"
+        "Energia: sähkönkulutuksen ja muiden mittausten historian saat ha_tilastot-työkalulla (etsi ensin "
+        "tunnus listaa=true, haku esim. 'energia' tai 'kulutus'); lyhyt historia ha_historia. Kerro kulutus kWh "
+        "ja vertaa tarvittaessa edelliseen jaksoon. Turku Energian tiedot tulevat 6–24 tunnin viiveellä.\n"
         "Ruokapäiväkirja: kun käyttäjä kertoo, mitä on syöty (tai vahvistaa listan ruoan "
         "toteutuneen), lisää rivi tiedostoon ruokalistat/syodyt.md append_file-työkalulla "
         "muodossa '- PP.KK.VVVV: ruoka (resepti-tiedosto jos tiedossa) – arvio/kommentti'. "
@@ -574,6 +578,36 @@ TOOLS = [
             "type": "object",
             "properties": {"kalenteri": {"type": "string"}, "tapahtuma_id": {"type": "string"}},
             "required": ["kalenteri", "tapahtuma_id"],
+        },
+    },
+    {
+        "name": "ha_historia",
+        "description": "Hakee Home Assistant -anturin arvot aikaväliltä (lyhyt historia, yleensä 10 päivää), "
+        "esim. lämpötila tai päivän sähkönkulutus. Palauttaa enintään 200 pistettä.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string"},
+                "alku": {"type": "string", "description": "Suomen aikaa, esim. 2026-11-10T00:00:00"},
+                "loppu": {"type": "string", "description": "Oletus nyt"},
+            },
+            "required": ["entity_id", "alku"],
+        },
+    },
+    {
+        "name": "ha_tilastot",
+        "description": "Lukee Home Assistantin pitkäaikaiset tilastot (myös Energia-näkymän sähkönkulutus) jaksoittain: "
+        "kulutus (change) tai keskiarvo/min/max. listaa=true listaa tilastojen tunnukset (haku-sanalla rajattuna).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "statistic_id": {"type": "string", "description": "Esim. sensor.kulutus tai integraation tilasto"},
+                "alku": {"type": "string", "description": "Suomen aikaa, esim. 2026-10-01"},
+                "loppu": {"type": "string", "description": "Oletus nyt"},
+                "jakso": {"type": "string", "enum": ["hour", "day", "week", "month"], "description": "Oletus day"},
+                "listaa": {"type": "boolean"},
+                "haku": {"type": "string", "description": "Rajaa listausta, esim. 'energia' tai 'kulutus'"},
+            },
         },
     },
     {
@@ -1665,6 +1699,76 @@ async def browser_task(instruction: str, confirm: bool) -> str:
     return text or "Selainapuri ei saanut tehtävää valmiiksi (liian monta vaihetta). Pyydä käyttäjää jatkamaan paneelissa."
 
 
+# --- Home Assistantin historia ja pitkäaikaiset tilastot (esim. sähkönkulutus) ---
+def local_iso(value: str | None, end: bool = False) -> str:
+    """Suomen aika -> ISO 8601 aikavyöhykkeineen; pelkkä päivä = päivän alku (tai loppu)."""
+    if not value:
+        return datetime.now(TZ).isoformat()
+    v = value.strip()
+    v = v[:19] if len(v) > 10 else v + ("T23:59:59" if end else "T00:00:00")
+    return datetime.fromisoformat(v).replace(tzinfo=TZ).isoformat()
+
+
+async def ha_history(entity_id: str, start: str, end: str | None) -> str:
+    r = await http.get(f"{HA_URL}/history/period/{local_iso(start)}", headers=HA_HEADERS, timeout=60, params={
+        "filter_entity_id": entity_id, "end_time": local_iso(end, True), "minimal_response": "", "no_attributes": ""})
+    r.raise_for_status()
+    rows = (r.json() or [[]])[0]
+    if not rows:
+        return "Ei historiaa tältä aikaväliltä (lyhyt historia säilyy yleensä 10 päivää; käytä ha_tilastot)."
+    step = max(1, len(rows) // 200)
+    pts = [f"{datetime.fromisoformat(x['last_changed']).astimezone(TZ):%d.%m. %H:%M} {x['state']}" for x in rows[::step]]
+    return f"{entity_id}: {len(rows)} arvoa" + (f" (joka {step}. näytetään)" if step > 1 else "") + "\n" + "\n".join(pts)
+
+
+async def ha_ws(message: dict) -> dict:
+    """Yksi kysely Home Assistantin websocket-rajapintaan (tilastot eivät ole REST-rajapinnassa)."""
+    import websockets  # vain tarvittaessa
+
+    async with websockets.connect(HA_WS_URL, max_size=20_000_000, open_timeout=20) as ws:
+        await ws.recv()  # auth_required
+        await ws.send(json.dumps({"type": "auth", "access_token": os.environ["SUPERVISOR_TOKEN"]}))
+        if json.loads(await ws.recv()).get("type") != "auth_ok":
+            raise RuntimeError("Home Assistantin websocket-tunnistautuminen epäonnistui")
+        await ws.send(json.dumps({"id": 1, **message}))
+        reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=60))
+    if not reply.get("success", False):
+        raise RuntimeError(f"Home Assistant: {reply.get('error')}")
+    return reply.get("result")
+
+
+async def ha_statistics(args: dict) -> str:
+    if args.get("listaa") or not args.get("statistic_id"):
+        ids = await ha_ws({"type": "recorder/list_statistic_ids"})
+        q = (args.get("haku") or "").lower()
+        rows = [f"- {s['statistic_id']} ({s.get('name') or ''}, {s.get('statistics_unit_of_measurement') or ''}"
+                f"{', kertymä' if s.get('has_sum') else ''})" for s in ids
+                if not q or q in s["statistic_id"].lower() or q in (s.get("name") or "").lower()]
+        return "\n".join(rows[:100]) or "Ei tilastoja."
+    sid, period = args["statistic_id"], args.get("jakso") or "day"
+    result = await ha_ws({"type": "recorder/statistics_during_period", "statistic_ids": [sid], "period": period,
+                          "start_time": local_iso(args.get("alku") or (datetime.now(TZ).date().isoformat())),
+                          "end_time": local_iso(args.get("loppu"), True),
+                          "types": ["change", "mean", "min", "max"]})
+    rows = (result or {}).get(sid) or []
+    if not rows:
+        return f"Tilastolle {sid} ei ole arvoja tältä aikaväliltä."
+    fmt = {"hour": "%d.%m. %H:00", "day": "{wd} %d.%m.", "week": "vko %V (%d.%m.)", "month": "%m/%Y"}[period]
+    weekdays = ["ma", "ti", "ke", "to", "pe", "la", "su"]
+    out, total = [], 0.0
+    for x in rows:
+        dt = datetime.fromtimestamp(x["start"] / 1000 if isinstance(x["start"], (int, float)) else
+                                    datetime.fromisoformat(x["start"]).timestamp(), TZ)
+        when = dt.strftime(fmt).replace("{wd}", weekdays[dt.weekday()])
+        if x.get("change") is not None:
+            total += x["change"]
+            out.append(f"{when}: {x['change']:.2f}")
+        else:
+            out.append(f"{when}: ka {x.get('mean')}, min {x.get('min')}, max {x.get('max')}")
+    summary = f"\nYhteensä {total:.2f}" if any(x.get("change") is not None for x in rows) else ""
+    return f"{sid}, jakso {period}:\n" + "\n".join(out[-120:]) + summary
+
+
 async def send_image_to_chat(rel: str, caption: str = "") -> str:
     chat = current_chat.get()
     if chat is None:
@@ -1779,6 +1883,12 @@ async def run_tool(name: str, args: dict) -> str | list:
 
         if name == "tallenna_resepti":
             return await save_recipe(args["url"], args.get("nimi", ""))
+
+        if name == "ha_historia":
+            return await ha_history(args["entity_id"], args["alku"], args.get("loppu"))
+
+        if name == "ha_tilastot":
+            return await ha_statistics(args)
 
         if name == "calendar_get_events":
             r = await http.get(
