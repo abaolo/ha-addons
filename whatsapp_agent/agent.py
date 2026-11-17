@@ -2986,7 +2986,7 @@ async def run_with_typing(chat, key: str, text: str, quiet: bool) -> str:
             pass
 
 
-async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, media: str = "",
+async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, media: str | list[str] = "",
                       heard: str = "") -> None:
     """key = keskustelun tunniste: lähettäjän numero tai ryhmän tunnus.
 
@@ -2996,8 +2996,7 @@ async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, 
         current_chat.set(chat)
         if may_stay_silent and not await gate_says_for_agent(key, text):
             log.info("Ryhmävahti: viesti ei kuulu agentille, ei vastausta")
-            if media:
-                safe_path(media).unlink(missing_ok=True)
+            remove_media(media)
             return
         try:
             reply = await run_with_typing(chat, key, text, may_stay_silent)
@@ -3006,8 +3005,7 @@ async def handle_text(chat, key: str, text: str, may_stay_silent: bool = False, 
             reply = "Virhe käsittelyssä. Katso lisäosan loki."
         if may_stay_silent and reply.strip().strip(".").upper() == SILENT:
             log.info("Ryhmäviesti ei kuulunut agentille, ei vastausta: %s", text[:120])
-            if media:
-                safe_path(media).unlink(missing_ok=True)
+            remove_media(media)
             return
         if heard:  # näytetään, mitä ääniviestistä kuultiin, jotta tunnistusvirheet huomaa heti
             reply = f"🎤 _{heard}_\n\n{reply}"
@@ -3051,14 +3049,74 @@ def addressed_to_me(msg, text: str) -> bool:
     return bool(ctx.participant) and ctx.participant.split("@")[0] in my_ids
 
 
-# Ilman kuvatekstiä lähetetyt tiedostot liitetään seuraavan tekstiviestin alkuun,
-# jotta esim. "tämä on kanakeitto" tietää, mistä kuvasta on kyse.
+# Ilman kuvatekstiä lähetetyt tiedostot liitetään saman lähettäjän seuraavan viestin alkuun,
+# jotta esim. "tämä on kanakeitto" tietää, mistä kuvasta on kyse. Avain: keskustelu|lähettäjä.
+# WhatsApp lähettää usean kuvan albumin erillisinä viesteinä ja kuvateksti on vain yhdessä niistä,
+# joten kuvatekstillistä kuvaa odotetaan ALBUM_WAIT sekuntia, jotta muut albumin kuvat ehtivät mukaan.
 pending_files: dict[str, list[str]] = {}
+ALBUM_WAIT = 3.0
+GROUP_PENDING_TTL = 120  # ryhmässä ilman mainintaa tulleet kuvat poistetaan, jos mikään viesti ei käytä niitä
 
 
-def with_pending(key: str, text: str) -> str:
-    files = pending_files.pop(key, [])
-    return (f"[Lähetin aiemmin tiedostot: {', '.join(files)}] " if files else "") + text
+def remove_media(media: str | list[str]) -> None:
+    for rel in ([media] if isinstance(media, str) else media):
+        if rel:
+            try:
+                safe_path(rel).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def with_pending(pkey: str, text: str) -> tuple[str, list[str]]:
+    files = pending_files.pop(pkey, [])
+    return (f"[Lähetin myös tiedostot: {', '.join(files)}] " if files else "") + text, files
+
+
+async def handle_after_album(chat, key: str, pkey: str, prefix: str, text: str, silent_ok: bool,
+                             media: list[str], heard: str = "", wait: bool = True) -> None:
+    """Käsittelee viestin, kun albumin muut kuvat ovat ehtineet perille (ne liitetään mukaan)."""
+    if wait:
+        await asyncio.sleep(ALBUM_WAIT)
+    full, files = with_pending(pkey, text)
+    await handle_text(chat, key, prefix + full, silent_ok, media + files, heard=heard)
+
+
+async def notify_saved(chat, pkey: str, paths: list[str], group_unaddressed: bool) -> None:
+    """Ilman tekstiä tulleet tiedostot: kerrotaan tallennuksesta (tai ryhmässä poistetaan myöhemmin),
+    ellei saman lähettäjän viesti ole jo ottanut niitä käyttöön."""
+    await asyncio.sleep(GROUP_PENDING_TTL if group_unaddressed else ALBUM_WAIT + 1.5)
+    still = [p for p in paths if p in pending_files.get(pkey, [])]
+    if not still:
+        return
+    if group_unaddressed:
+        pending_files[pkey] = [p for p in pending_files.get(pkey, []) if p not in still]
+        remove_media(still)
+        return
+    await send_whatsapp(chat, f"Tallennettu: {', '.join(still)}. Kerro, mihin ruokaan tai reseptiin "
+                              f"{'ne kuuluvat' if len(still) > 1 else 'se kuuluu'}, tai mitä teen "
+                              f"{'niillä' if len(still) > 1 else 'sillä'}.")
+
+
+_notify_tasks: dict[str, asyncio.Task] = {}
+_notify_paths: dict[str, list[str]] = {}
+
+
+def schedule_notify(chat, pkey: str, path: str, group_unaddressed: bool) -> None:
+    """Yksi ilmoitus koko albumista: ajastus alkaa alusta jokaisesta uudesta kuvasta."""
+    paths = _notify_paths.setdefault(pkey, [])
+    paths.append(path)
+    old = _notify_tasks.get(pkey)
+    if old and not old.done():
+        old.cancel()
+
+    async def run() -> None:
+        try:
+            await notify_saved(chat, pkey, list(paths), group_unaddressed)
+        except asyncio.CancelledError:
+            return
+        _notify_paths.pop(pkey, None)
+
+    _notify_tasks[pkey] = asyncio.create_task(run())
 
 
 async def save_media(msg, field: str) -> str:
@@ -3097,8 +3155,10 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
                             "jos agentin pitää vastata siellä.", group)
             return
         if not addressed:
-            if not GROUP_REPLY_ALL or not (text or caption or is_voice):
-                return  # ryhmän muut keskustelut (ja kuvat ilman kuvatekstiä) eivät kuulu agentille
+            media_only = not (text or caption or is_voice) and any(
+                msg.HasField(f) for f in ("imageMessage", "documentMessage"))
+            if not GROUP_REPLY_ALL or not (text or caption or is_voice or media_only):
+                return  # ryhmän muut keskustelut eivät kuulu agentille
             silent_ok = True
 
     sender = sender_number(source)
@@ -3137,6 +3197,7 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
             log.exception("Lainatun ääniviestin tunnistus epäonnistui")
             text += "\n[Käyttäjä vastasi ääniviestiin, mutta sen tunnistus epäonnistui]"
 
+    pkey = f"{source.Chat.User}|{sender}"  # odottavat tiedostot lähettäjäkohtaisesti
     if source.IsGroup:
         key = f"ryhma:{source.Chat.User}"
         prefix = (f"[Ryhmäviesti, lähettäjä {ev.Info.Pushname or sender}"
@@ -3145,7 +3206,9 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
         key = sender
 
     if text:
-        asyncio.create_task(handle_text(source.Chat, key, prefix + with_pending(key, text), silent_ok, heard=heard))
+        # Tekstiä ei viivytetä: ennen sitä lähetetyt kuvat ovat jo perillä.
+        asyncio.create_task(handle_after_album(source.Chat, key, pkey, prefix, text, silent_ok, [],
+                                               heard=heard, wait=False))
         return
 
     for field in MEDIA_FIELDS:
@@ -3158,17 +3221,16 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
                 return
             caption = (getattr(getattr(msg, field), "caption", "") or "").strip()
             if caption:  # kuvateksti toimii ohjeena, esim. "siirrä reseptit-kansioon"
-                asyncio.create_task(
-                    handle_text(source.Chat, key, prefix + with_pending(
-                        key, f"[Lähetin tiedoston, joka tallennettiin polkuun {path}] {caption}"),
-                        silent_ok, path)
-                )
+                asyncio.create_task(handle_after_album(
+                    source.Chat, key, pkey, prefix,
+                    f"[Lähetin tiedoston, joka tallennettiin polkuun {path}] {caption}",
+                    silent_ok, [path]))
             elif field == "audioMessage":
                 await send_whatsapp(source.Chat, f"Tallensin ääniviestin ({path}), mutta en osaa vielä kuunnella sitä: "
                                                  "lisää puheentunnistuksen avain lisäosan asetukseen stt_api_key.")
             else:
-                pending_files.setdefault(key, []).append(path)
-                await send_whatsapp(source.Chat, f"Tallennettu: {path}. Kerro, mihin ruokaan tai reseptiin se kuuluu.")
+                pending_files.setdefault(pkey, []).append(path)
+                schedule_notify(source.Chat, pkey, path, group_unaddressed=silent_ok)
             return
 
     await send_whatsapp(source.Chat, "Tätä viestityyppiä en vielä osaa käsitellä.")
