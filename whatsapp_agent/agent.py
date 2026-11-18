@@ -2113,7 +2113,7 @@ async def energy_update(days_back: int = 40) -> str:
     fine_line = (f"Tuntitiedot: {len(fine)} tuntia viimeiseltä {min(days_back, EO_FINE_DAYS)} päivältä "
                  f"(EnergiaOnlinen tarkkuus {fine_info}). {last_hour_text(hours)} Yö/päivä-erittely ja päivän "
                  "tunnit työkalulla energia_tunnit."
-                 if fine else f"Tuntitietoja ei saatu ({fine_info}).")
+                 if fine else f"Tuntitietoja ei saatu tällä kertaa ({fine_info}). Aiemmin haetut: {last_hour_text(hours)}")
     return (f"Haettu {len(new)} päivän kulutus (tilasto {ENERGY_STAT_ID}). Viimeiset päivät:\n" + "\n".join(lines)
             + "\n" + fine_line + "\nHuom: EnergiaOnlinen tiedot tulevat 6–24 tunnin viiveellä.")
 
