@@ -598,12 +598,15 @@ TOOLS = [
     {
         "name": "energia_tunnit",
         "description": "Sähkönkulutus tunneittain (EnergiaOnlinen vartti-/tuntitiedot, viimeinen kuukausi, säilyy "
-        "vuoden): yö- ja päiväosuus, keskikulutus kellonajoittain, arki vs. viikonloppu ja suurimmat tunnit. "
+        "vuoden): yö- ja päiväosuus, keskikulutus kellonajoittain, arki vs. viikonloppu, suurimmat tunnit, "
+        "viimeisin mitattu tunti ja paiva-parametrilla yhden päivän tunnit. "
         "Laskee koodissa; käytä tätä yösähkö- ja kellonaikakysymyksiin.",
         "input_schema": {"type": "object", "properties": {
             "paivia": {"type": "integer", "description": "Montako päivää taaksepäin (oletus 30)"},
             "yo_alku": {"type": "integer", "description": "Yön alku, tunti (oletus 22)"},
-            "yo_loppu": {"type": "integer", "description": "Yön loppu, tunti (oletus 7)"}}},
+            "yo_loppu": {"type": "integer", "description": "Yön loppu, tunti (oletus 7)"},
+            "paiva": {"type": "string", "description": "Valinnainen päivä (YYYY-MM-DD): listaa sen kulutuksen "
+                      "tunti kerrallaan ja viimeisimmän mitatun tunnin"}}},
     },
     {
         "name": "saa_lampotilat",
@@ -2108,16 +2111,40 @@ async def energy_update(days_back: int = 40) -> str:
     lines = [f"{datetime.fromisoformat(d):%d.%m.}: {new[d]:.2f} kWh" for d in recent]
     log.info("Sähkönkulutus päivitetty: %d päivää", len(new))
     fine_line = (f"Tuntitiedot: {len(fine)} tuntia viimeiseltä {min(days_back, EO_FINE_DAYS)} päivältä "
-                 f"(EnergiaOnlinen tarkkuus {fine_info}); yö/päivä-erittely työkalulla energia_tunnit."
+                 f"(EnergiaOnlinen tarkkuus {fine_info}). {last_hour_text(hours)} Yö/päivä-erittely ja päivän "
+                 "tunnit työkalulla energia_tunnit."
                  if fine else f"Tuntitietoja ei saatu ({fine_info}).")
     return (f"Haettu {len(new)} päivän kulutus (tilasto {ENERGY_STAT_ID}). Viimeiset päivät:\n" + "\n".join(lines)
             + "\n" + fine_line + "\nHuom: EnergiaOnlinen tiedot tulevat 6–24 tunnin viiveellä.")
 
 
-async def energy_hours_report(days_back: int, night_start: int, night_end: int) -> str:
+def last_hour_text(hours: dict[str, float]) -> str:
+    """Viimeisin mitattu tunti Suomen aikaa, esim. 'Viimeisin mitattu tunti: ti 18.11. klo 12–13.'"""
+    if not hours:
+        return ""
+    w = datetime.fromisoformat(max(hours).replace("Z", "+00:00")).astimezone(TZ)
+    return f"Viimeisin mitattu tunti: {fi_day(w.date().isoformat())} klo {w:%H}–{(w + timedelta(hours=1)):%H}."
+
+
+def energy_day_hours(hours: dict[str, float], day: str) -> str:
+    """Yhden päivän kulutus tunneittain (Suomen aikaa)."""
+    rows = sorted((datetime.fromisoformat(k.replace("Z", "+00:00")).astimezone(TZ), v) for k, v in hours.items())
+    rows = [(w, v) for w, v in rows if w.date().isoformat() == day]
+    if not rows:
+        return f"Päivältä {day} ei ole tuntitietoja. {last_hour_text(hours)}"
+    lines = [f"Kulutus {fi_day(day)} tunneittain (kWh), yhteensä {sum(v for _, v in rows):.2f} kWh "
+             f"({len(rows)} tuntia):"]
+    lines += [f"klo {w:%H}–{(w + timedelta(hours=1)):%H}: {v:.2f}" for w, v in rows]
+    lines.append(last_hour_text(hours))
+    return "\n".join(lines)
+
+
+async def energy_hours_report(days_back: int, night_start: int, night_end: int, day: str = "") -> str:
     hours = energy_hours_stored()
     if not hours:
         return "Tuntitietoja ei ole vielä. Aja energia_paivita (hakee viimeisen kuukauden tunti-/varttitiedot)."
+    if day:
+        return energy_day_hours(hours, day[:10])
     first = (datetime.now(TZ) - timedelta(days=max(1, min(days_back, 400)))).replace(hour=0, minute=0, second=0)
     local = [(datetime.fromisoformat(k.replace("Z", "+00:00")).astimezone(TZ), v) for k, v in hours.items()]
     local = [(w, v) for w, v in local if w >= first]
@@ -2145,6 +2172,7 @@ async def energy_hours_report(days_back: int, night_start: int, night_end: int) 
                      f"{sum(weekend) / len(weekend):.1f} kWh.")
     lines.append("Keskikulutus kellonajoittain (kWh/h):")
     lines.append(", ".join(f"{h:02d}: {sum(vs) / len(vs):.2f}" for h, vs in sorted(by_hour.items())))
+    lines.append(last_hour_text(hours))
     top = sorted(local, key=lambda x: -x[1])[:5]
     lines.append("Suurimmat tunnit: " + ", ".join(f"{fi_day(w.date().isoformat())} klo {w:%H} {v:.2f} kWh" for w, v in top))
     return "\n".join(lines)
@@ -2684,7 +2712,7 @@ async def run_tool(name: str, args: dict) -> str | list:
 
         if name == "energia_tunnit":
             return await energy_hours_report(int(args.get("paivia") or 30), int(args.get("yo_alku", 22)),
-                                             int(args.get("yo_loppu", 7)))
+                                             int(args.get("yo_loppu", 7)), str(args.get("paiva") or ""))
 
         if name == "saa_lampotilat":
             return await weather_report(int(args.get("paivia") or 14), args.get("ennuste", True) is not False)
