@@ -3028,6 +3028,11 @@ MEDIA_FIELDS = {
 }
 
 
+SILENT_FIELDS = ("reactionMessage", "encReactionMessage", "protocolMessage", "editedMessage",
+                 "senderKeyDistributionMessage", "pollUpdateMessage", "keepInChatMessage", "pinInChatMessage",
+                 "stickerMessage")
+
+
 def context_info(msg):
     if msg.HasField("extendedTextMessage"):
         return msg.extendedTextMessage.contextInfo
@@ -3233,6 +3238,16 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
                 schedule_notify(source.Chat, pkey, path, group_unaddressed=silent_ok)
             return
 
+    # Reaktiot (esim. 👍), muokkaukset, poistot ja muut taustaviestit eivät vaadi vastausta.
+    for field in SILENT_FIELDS:
+        try:
+            if msg.HasField(field):
+                log.info("Ohitettu viesti (%s)", field)
+                return
+        except ValueError:  # kenttää ei ole tässä neonize-versiossa
+            continue
+    if source.IsGroup:
+        return
     await send_whatsapp(source.Chat, "Tätä viestityyppiä en vielä osaa käsitellä.")
 
 
