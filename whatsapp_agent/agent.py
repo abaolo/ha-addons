@@ -616,7 +616,10 @@ TOOLS = [
         "ha_tilastot).",
         "input_schema": {"type": "object", "properties": {
             "paivia": {"type": "integer", "description": "Montako päivää taaksepäin (oletus 14, enintään 400)"},
-            "ennuste": {"type": "boolean", "description": "Mukaan ennuste (oletus true)"}}},
+            "ennuste": {"type": "boolean", "description": "Mukaan ennuste (oletus true)"},
+            "tunnit": {"type": "integer", "description": "Tuntitarkkuus: mitattu lämpötila tunnin välein näin monelta "
+                       "viime tunnilta (1–144, esim. 12 = viime yö), uusin mittaus ja ennuste tunneittain 24 h "
+                       "eteenpäin. Käytä kysymyksiin 'mikä on lämpötila nyt', 'paljonko oli yöllä'."}}},
     },
     {
         "name": "energia_arvio",
@@ -2342,6 +2345,52 @@ async def fmi_observed(start: datetime, end: datetime, preferred: str = "") -> d
             for d, vs in sorted(per_day.items()) if d < today and len(vs) >= 18}
 
 
+async def weather_hourly(hours_back: int) -> str:
+    """Mitattu lämpötila tunneittain viime tunneilta (myös kuluvalta päivältä) ja ennuste 24 h eteenpäin."""
+    hours_back = max(1, min(hours_back, 144))
+    try:
+        await fmi_resolve_place()
+        end = datetime.now(TZ)
+        start = (end - timedelta(hours=hours_back)).replace(minute=0, second=0, microsecond=0)
+        utc = ZoneInfo("UTC")
+        rows = await fmi_query("fmi::observations::weather::simple", {
+            "parameters": "t2m", "timestep": "60",
+            **({} if "bbox" in fmi_location(True) else {"maxlocations": "5"}),
+            "starttime": start.astimezone(utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "endtime": end.astimezone(utc).strftime("%Y-%m-%dT%H:%M:%SZ")}, with_pos=True)
+        fc_rows = await fmi_query("fmi::forecast::edited::weather::scandinavia::point::simple",
+                                  {"parameters": "Temperature", "timestep": "60"})
+    except WeatherError as e:
+        return str(e)
+    by_station: dict[str, dict[str, float]] = {}
+    for time, _par, v, pos in rows:
+        by_station.setdefault(pos, {})[time] = v
+    lines = []
+    if by_station:
+        station = fmi_pick_station({p: len(v) for p, v in by_station.items()}, temp_state().get("asema", ""))
+        obs = sorted((datetime.fromisoformat(k.replace("Z", "+00:00")).astimezone(TZ), v)
+                     for k, v in by_station[station].items())
+        lines.append(f"Mitattu ulkolämpötila tunneittain (Ilmatieteen laitos, havaintoasema {station}), °C:")
+        day = None
+        for w, v in obs:
+            if w.date() != day:
+                day = w.date()
+                lines.append(f"{fi_day(day.isoformat())}:")
+            lines.append(f"  klo {w:%H}: {v:.1f}")
+        last_w, last_v = obs[-1]
+        lines.append(f"Uusin mittaus {fi_day(last_w.date().isoformat())} klo {last_w:%H:%M}: {last_v:.1f} °C. "
+                     f"Jakson alin {min(v for _, v in obs):.1f} °C, ylin {max(v for _, v in obs):.1f} °C.")
+    else:
+        lines.append("Mitattuja tuntiarvoja ei saatu Ilmatieteen laitokselta.")
+    now = datetime.now(TZ)
+    fc = sorted((datetime.fromisoformat(time.replace("Z", "+00:00")).astimezone(TZ), v) for time, _p, v in fc_rows)
+    fc = [(w, v) for w, v in fc if now <= w <= now + timedelta(hours=24)]
+    if fc:
+        lines.append("Ennuste tunneittain seuraavat 24 h, °C:")
+        lines += [f"  {fi_day(w.date().isoformat())} klo {w:%H}: {v:.1f}" for w, v in fc]
+    return "\n".join(lines)
+
+
 async def fmi_forecast() -> dict[str, list[float]]:
     """Ennusteen päiväarvot [keski, min, max] Suomen ajan päivittäin tunneittaisista arvoista."""
     rows = await fmi_query("fmi::forecast::edited::weather::scandinavia::point::simple",
@@ -2715,6 +2764,8 @@ async def run_tool(name: str, args: dict) -> str | list:
                                              int(args.get("yo_loppu", 7)), str(args.get("paiva") or ""))
 
         if name == "saa_lampotilat":
+            if args.get("tunnit"):
+                return await weather_hourly(int(args["tunnit"]))
             return await weather_report(int(args.get("paivia") or 14), args.get("ennuste", True) is not False)
 
         if name == "energia_arvio":
