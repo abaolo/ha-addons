@@ -3200,9 +3200,11 @@ async def handle_after_album(chat, key: str, pkey: str, prefix: str, text: str, 
     await handle_text(chat, key, prefix + full, silent_ok, media + files, heard=heard)
 
 
-async def notify_saved(chat, pkey: str, paths: list[str], group_unaddressed: bool) -> None:
-    """Ilman tekstiä tulleet tiedostot: kerrotaan tallennuksesta (tai ryhmässä poistetaan myöhemmin),
-    ellei saman lähettäjän viesti ole jo ottanut niitä käyttöön."""
+async def notify_saved(chat, pkey: str, paths: list[str], group_unaddressed: bool, key: str = "",
+                       prefix: str = "") -> None:
+    """Ilman tekstiä tulleet tiedostot: ellei saman lähettäjän viesti ole jo ottanut niitä käyttöön, ne annetaan
+    agentille keskustelun yhteydessä (se voi tietää, mihin ne kuuluvat). Ryhmässä ilman mainintaa ne poistetaan
+    myöhemmin, jos mikään viesti ei käytä niitä."""
     await asyncio.sleep(GROUP_PENDING_TTL if group_unaddressed else ALBUM_WAIT + 1.5)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + ALBUM_MAX_WAIT
@@ -3217,16 +3219,17 @@ async def notify_saved(chat, pkey: str, paths: list[str], group_unaddressed: boo
         pending_files[pkey] = [p for p in pending_files.get(pkey, []) if p not in still]
         remove_media(still)
         return
-    await send_whatsapp(chat, f"Tallennettu: {', '.join(still)}. Kerro, mihin ruokaan tai reseptiin "
-                              f"{'ne kuuluvat' if len(still) > 1 else 'se kuuluu'}, tai mitä teen "
-                              f"{'niillä' if len(still) > 1 else 'sillä'}.")
+    pending_files[pkey] = [p for p in pending_files.get(pkey, []) if p not in still]
+    note = (f"[Lähetin {len(still)} tiedostoa ilman viestiä; ne tallennettiin: {', '.join(still)}. "
+            "Jos keskustelusta käy ilmi, mitä niillä tehdään, tee se. Muuten kysy lyhyesti.]")
+    await handle_text(chat, key or pkey, prefix + note, False, [])
 
 
 _notify_tasks: dict[str, asyncio.Task] = {}
 _notify_paths: dict[str, list[str]] = {}
 
 
-def schedule_notify(chat, pkey: str, path: str, group_unaddressed: bool) -> None:
+def schedule_notify(chat, pkey: str, path: str, group_unaddressed: bool, key: str = "", prefix: str = "") -> None:
     """Yksi ilmoitus koko albumista: ajastus alkaa alusta jokaisesta uudesta kuvasta."""
     paths = _notify_paths.setdefault(pkey, [])
     paths.append(path)
@@ -3236,7 +3239,7 @@ def schedule_notify(chat, pkey: str, path: str, group_unaddressed: bool) -> None
 
     async def run() -> None:
         try:
-            await notify_saved(chat, pkey, list(paths), group_unaddressed)
+            await notify_saved(chat, pkey, list(paths), group_unaddressed, key, prefix)
         except asyncio.CancelledError:
             return
         _notify_paths.pop(pkey, None)
@@ -3370,7 +3373,7 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
                                                  "lisää puheentunnistuksen avain lisäosan asetukseen stt_api_key.")
             else:
                 pending_files.setdefault(pkey, []).append(path)
-                schedule_notify(source.Chat, pkey, path, group_unaddressed=silent_ok)
+                schedule_notify(source.Chat, pkey, path, group_unaddressed=silent_ok, key=key, prefix=prefix)
             return
 
     # Reaktiot (esim. 👍), muokkaukset, poistot ja muut taustaviestit eivät vaadi vastausta.
