@@ -3250,12 +3250,19 @@ async def save_media(msg, field: str) -> str:
     data = await wa.download_any(msg)
     default = f"{kind}_{datetime.now(TZ):%Y%m%d-%H%M%S}{ext}"
     name = Path(getattr(media, "fileName", "") or default).name  # pelkkä tiedostonimi
-    target = safe_path(f"{INBOX_DIR}/{name}")
-    if target.exists():
-        target = target.with_name(f"{target.stem}_{datetime.now(TZ):%Y%m%d-%H%M%S}{target.suffix}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
-    return str(target.relative_to(FILES_ROOT))
+    base = safe_path(f"{INBOX_DIR}/{name}")
+    base.parent.mkdir(parents=True, exist_ok=True)
+    # Albumin kuvat tulevat samalla sekunnilla ja tallentuvat rinnakkain: nimi varataan atomisesti
+    # (tiedosto luodaan vain, jos sitä ei ole), muuten numero perään. Mitään ei korvata.
+    for n in range(1, 1000):
+        target = base if n == 1 else base.with_name(f"{base.stem}_{n}{base.suffix}")
+        try:
+            with open(target, "xb") as f:
+                f.write(data)
+            return str(target.relative_to(FILES_ROOT))
+        except FileExistsError:
+            continue
+    raise OSError(f"Vapaata tiedostonimeä ei löytynyt: {base.name}")
 
 
 @wa.event(MessageEv)
