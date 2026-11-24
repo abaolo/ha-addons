@@ -3107,6 +3107,33 @@ MEDIA_FIELDS = {
 }
 
 
+# Viestit, joiden sisällä on varsinainen viesti (.message): albumin osat, katoavat ja kerran katsottavat viestit,
+# kuvatekstillinen dokumentti.
+WRAPPER_FIELDS = ("associatedChildMessage", "ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2",
+                  "viewOnceMessageV2Extension", "documentWithCaptionMessage", "groupMentionedMessage")
+
+
+def unwrap_message(msg):
+    for _ in range(4):
+        for field in WRAPPER_FIELDS:
+            try:
+                if msg.HasField(field) and getattr(msg, field).HasField("message"):
+                    msg = getattr(msg, field).message
+                    break
+            except ValueError:  # kenttää ei ole tässä neonize-versiossa
+                continue
+        else:
+            return msg
+    return msg
+
+
+def has_field(msg, field: str) -> bool:
+    try:
+        return msg.HasField(field)
+    except ValueError:
+        return False
+
+
 SILENT_FIELDS = ("reactionMessage", "encReactionMessage", "protocolMessage", "editedMessage",
                  "senderKeyDistributionMessage", "pollUpdateMessage", "keepInChatMessage", "pinInChatMessage",
                  "stickerMessage")
@@ -3138,7 +3165,9 @@ def addressed_to_me(msg, text: str) -> bool:
 # WhatsApp lähettää usean kuvan albumin erillisinä viesteinä ja kuvateksti on vain yhdessä niistä,
 # joten kuvatekstillistä kuvaa odotetaan ALBUM_WAIT sekuntia, jotta muut albumin kuvat ehtivät mukaan.
 pending_files: dict[str, list[str]] = {}
-ALBUM_WAIT = 3.0
+ALBUM_WAIT = 4.0
+ALBUM_MAX_WAIT = 20.0
+album_expect: dict[str, int] = {}  # albumiviestin ilmoittama kuvien määrä lähettäjäkohtaisesti
 GROUP_PENDING_TTL = 120  # ryhmässä ilman mainintaa tulleet kuvat poistetaan, jos mikään viesti ei käytä niitä
 
 
@@ -3161,6 +3190,12 @@ async def handle_after_album(chat, key: str, pkey: str, prefix: str, text: str, 
     """Käsittelee viestin, kun albumin muut kuvat ovat ehtineet perille (ne liitetään mukaan)."""
     if wait:
         await asyncio.sleep(ALBUM_WAIT)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + ALBUM_MAX_WAIT - ALBUM_WAIT
+        while (pkey in album_expect and len(media) + len(pending_files.get(pkey, [])) < album_expect[pkey]
+               and loop.time() < deadline):
+            await asyncio.sleep(0.5)
+        album_expect.pop(pkey, None)
     full, files = with_pending(pkey, text)
     await handle_text(chat, key, prefix + full, silent_ok, media + files, heard=heard)
 
@@ -3169,6 +3204,12 @@ async def notify_saved(chat, pkey: str, paths: list[str], group_unaddressed: boo
     """Ilman tekstiä tulleet tiedostot: kerrotaan tallennuksesta (tai ryhmässä poistetaan myöhemmin),
     ellei saman lähettäjän viesti ole jo ottanut niitä käyttöön."""
     await asyncio.sleep(GROUP_PENDING_TTL if group_unaddressed else ALBUM_WAIT + 1.5)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ALBUM_MAX_WAIT
+    while pkey in album_expect and loop.time() < deadline:  # albumi kesken: kuvateksti voi vielä ottaa kuvat
+        await asyncio.sleep(0.5)
+    await asyncio.sleep(0.5)  # kuvatekstillinen viesti ehtii poimia kuvat
+    album_expect.pop(pkey, None)
     still = [p for p in paths if p in pending_files.get(pkey, [])]
     if not still:
         return
@@ -3222,7 +3263,7 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
     source = ev.Info.MessageSource
     if source.IsFromMe:
         return
-    msg = ev.Message
+    msg = unwrap_message(ev.Message)
     text = msg.conversation or msg.extendedTextMessage.text
     is_voice = not text and msg.HasField("audioMessage") and bool(STT_KEY)
 
@@ -3240,7 +3281,7 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
             return
         if not addressed:
             media_only = not (text or caption or is_voice) and any(
-                msg.HasField(f) for f in ("imageMessage", "documentMessage"))
+                has_field(msg, f) for f in ("imageMessage", "documentMessage", "albumMessage"))
             if not GROUP_REPLY_ALL or not (text or caption or is_voice or media_only):
                 return  # ryhmän muut keskustelut eivät kuulu agentille
             silent_ok = True
@@ -3293,6 +3334,14 @@ async def on_message(client: NewAClient, ev: MessageEv) -> None:
         # Tekstiä ei viivytetä: ennen sitä lähetetyt kuvat ovat jo perillä.
         asyncio.create_task(handle_after_album(source.Chat, key, pkey, prefix, text, silent_ok, [],
                                                heard=heard, wait=False))
+        return
+
+    if has_field(msg, "albumMessage"):  # albumi: kuvat tulevat perässä omina viesteinään
+        album = msg.albumMessage
+        count = int(getattr(album, "expectedImageCount", 0) or 0) + int(getattr(album, "expectedVideoCount", 0) or 0)
+        if count:
+            album_expect[pkey] = count
+        log.info("Albumi tulossa: %d tiedostoa", count)
         return
 
     for field in MEDIA_FIELDS:
