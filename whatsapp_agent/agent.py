@@ -487,6 +487,23 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {"yhteenveto": {"type": "string"}}, "required": ["yhteenveto"]},
     },
     {
+        "name": "piirra_kuva",
+        "description": "Piirtää kuvan SVG-koodista (kaavio, pohjapiirros, sähkökaavio, aikajana, taulukko...), tallentaa "
+        "sen PNG:nä (ja SVG:nä) annettuun polkuun ja lähettää WhatsAppiin. Käytä aina, kun käyttäjä pyytää kuvaa, "
+        "kaaviota tai piirrosta. Anna SVG:lle width, height ja viewBox (esim. 1200x900), valkoinen tausta, "
+        "selkeät suomenkieliset tekstit (font-family sans-serif, vähintään 18 px). Ei ulkoisia kuvia tai skriptejä.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "svg": {"type": "string", "description": "Koko SVG-dokumentti <svg ...>...</svg>"},
+                "polku": {"type": "string", "description": "Tallennuspolku .png-päätteellä, esim. uusikatu/kirjasto/sahkot/kaavio.png"},
+                "teksti": {"type": "string", "description": "Kuvateksti WhatsAppiin"},
+                "laheta": {"type": "boolean", "description": "Lähetä WhatsAppiin (oletus true)"},
+            },
+            "required": ["svg", "polku"],
+        },
+    },
+    {
         "name": "laheta_kuva",
         "description": "Lähettää agentin kansiossa olevan kuvan (esim. reseptit/kuvat/kanakeitto-2.jpg) WhatsAppiin "
         "tähän keskusteluun.",
@@ -2649,6 +2666,51 @@ async def send_image_to_chat(rel: str, caption: str = "") -> str:
     return f"Kuva {rel} lähetetty WhatsAppiin."
 
 
+async def render_svg(svg: str, rel: str, caption: str = "", send: bool = True) -> str:
+    """SVG -> PNG Chromiumilla (headless, ilman verkkoa ja JavaScriptiä)."""
+    from playwright.async_api import async_playwright  # vain tarvittaessa
+
+    svg = svg.strip()
+    if not svg.startswith("<svg") and "<svg" in svg:
+        svg = svg[svg.index("<svg"):]
+    if not svg.startswith("<svg") or "</svg>" not in svg:
+        return "SVG puuttuu tai on keskeneräinen: anna koko dokumentti <svg ...>...</svg>."
+    tag = svg[:svg.index(">") + 1]
+
+    def attr(name: str) -> float | None:
+        m = re.search(rf'(?<![\w-]){name}\s*=\s*["\']\s*([\d.]+)\s*(?:px)?\s*["\']', tag)
+        return float(m.group(1)) if m else None
+
+    vb = re.search(r'viewBox\s*=\s*["\']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)', tag)
+    w, h = attr("width"), attr("height")
+    if not (w and h) and vb:
+        w, h = float(vb.group(1)), float(vb.group(2))
+    w, h = w or 1200.0, h or 900.0
+    scale = min(1.0, 2400 / max(w, h))
+    w, h = max(50, int(w * scale)), max(50, int(h * scale))
+    target = safe_path(rel if rel.lower().endswith(".png") else rel.rsplit(".", 1)[0] + ".png")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.with_suffix(".svg").write_text(svg, encoding="utf-8")
+    html_doc = ("<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;background:#fff}"
+                f"svg{{display:block;width:{w}px;height:{h}px}}</style></head><body>{svg}</body></html>")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        try:
+            ctx = await browser.new_context(viewport={"width": w, "height": h}, java_script_enabled=False,
+                                            device_scale_factor=1)
+            await ctx.route("**/*", lambda route: route.abort())  # ei ulkoisia latauksia
+            page = await ctx.new_page()
+            await page.set_content(html_doc, wait_until="load")
+            await page.screenshot(path=str(target), clip={"x": 0, "y": 0, "width": w, "height": h})
+        finally:
+            await browser.close()
+    rel_png = str(target.relative_to(FILES_ROOT))
+    result = f"Kuva tallennettu: {rel_png} (SVG: {rel_png[:-4]}.svg), {w}x{h} px."
+    if send:
+        result += " " + await send_image_to_chat(rel_png, caption)
+    return result
+
+
 async def run_tool(name: str, args: dict) -> str | list:
     try:
         if name == "list_files":
@@ -2749,6 +2811,10 @@ async def run_tool(name: str, args: dict) -> str | list:
 
         if name == "laheta_kuva":
             return await send_image_to_chat(args["path"], args.get("teksti", ""))
+
+        if name == "piirra_kuva":
+            return await render_svg(args["svg"], args["polku"], args.get("teksti", ""),
+                                    args.get("laheta", True) is not False)
 
         if name == "lue_kuva":
             return image_block(args["path"])
